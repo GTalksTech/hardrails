@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you reference the Hardrails framework, cite it as below."
+title: "Hardrails: deterministic boundaries around a non-deterministic agent"
+type: software
+authors:
+  - family-names: "Masters"
+    given-names: "Garrett"
+version: "1.0"
+date-released: "2026-07-06"
+url: "https://github.com/GTalksTech/hardrails"
+license: Apache-2.0
