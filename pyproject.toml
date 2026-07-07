@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hardrails"
+version = "0.1.0.dev0"
+description = "Hardrails reference implementation: a bounded network agent. Deterministic boundaries around a non-deterministic agent."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Garrett Masters (G Talks Tech)" }]
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2"]
+keywords = ["ai-agents", "network-automation", "mcp", "guardrails", "bounded-agents", "netmiko"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+]
+
+[project.urls]
+Homepage = "https://github.com/GTalksTech/hardrails"
+Specification = "https://github.com/GTalksTech/hardrails/blob/main/hardrails-spec.md"
+Channel = "https://www.youtube.com/@GTalksTechOfficial"
+
+[tool.setuptools]
+packages = ["netagent"]
