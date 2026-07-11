@@ -1,0 +1,35 @@
+# ============================================================
+# File:     inventory.yaml
+# Purpose:  Static device inventory for the bounded network-agent.
+# Author:   G Talks Tech
+# Episode:  EP010-L-ai-network-agents
+# GitHub:   github.com/GTalksTech/hardrails
+# Notes:    Public by design. NO PASSWORDS here -- credentials are supplied at
+#           runtime via the NETAGENT_PASSWORD env var or an interactive getpass
+#           prompt (see devices.py). These are REAL home-lab RFC1918 addresses;
+#           the lab exists to be replicated, so nothing is obfuscated.
+# ============================================================
+#
+# Each entry is deliberately minimal: enough for Netmiko to connect and for the
+# agent to reason about role/topology, nothing more. Anything sensitive
+# (passwords, enable secrets) is intentionally absent by design.
+
+defaults:
+  device_type: cisco_ios   # All lab nodes are Cisco IOL / IOL-L2.
+  username: admin          # Lab username. The PASSWORD is never stored here.
+
+devices:
+  - hostname: core-rtr-01
+    host: 192.168.1.250
+    role: router
+    description: Core router. Offers the alternate path in the cross-device finding.
+
+  - hostname: edge-rtr-01
+    host: 10.0.0.2          # Also reachable at 10.0.12.1 on the core-facing link.
+    role: router
+    description: Edge router. Holds the ACL that only "looks like" it protects the server subnet.
+
+  - hostname: access-sw-01
+    host: 192.168.1.251
+    role: switch
+    description: Access layer switch (IOL-L2).

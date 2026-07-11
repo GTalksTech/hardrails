@@ -9,6 +9,9 @@ venv/
 
 # Environments and secrets
 .env
+# Local MCP wiring: only the .example ships. A real .mcp.json points at a
+# local venv path and must never carry credentials anyway (env-only rule).
+.mcp.json
 
 # Tooling caches
 .pytest_cache/

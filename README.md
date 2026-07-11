@@ -47,14 +47,17 @@ checklist, and the adoption path: [hardrails-spec.md](hardrails-spec.md).
 ## Status
 
 - **Specification: v1.0.** Stable, versioned, in this repo.
-- **Reference implementation (`netagent/`): in active development.** A
+- **Reference implementation (`netagent/`): shipped, in this repo.** A
   bounded network agent built as an MCP server (FastMCP, Netmiko, Pydantic,
   NetBox as the intent source of truth), for a 3-node Cisco lab replicable
-  on CML Free. The data models that make "silently apply a change"
-  unrepresentable are already here; the server, the boundary code, and the
-  lab topology ship with the full video walkthrough.
+  on CML Free. Read-only device access that structurally refuses writes, a
+  server-side boundary with an append-only audit log, dry-run remediation
+  behind a human approval gate, and a posture sweep whose deterministic
+  checks (live Cisco PSIRT CVE lookup with a provenance-stamped offline
+  cache, NTP hardening, NetBox intent drift) are unit-tested and validated
+  against a live lab. **Running it: see [`netagent/README.md`](netagent/README.md).**
 
-The complete build walkthrough is coming on
+The full build walkthrough video is coming on
 [G Talks Tech](https://www.youtube.com/@GTalksTechOfficial). Subscribe there
 or join the mailing list at [join.gtalkstech.com](https://join.gtalkstech.com)
 if you want it when it lands.

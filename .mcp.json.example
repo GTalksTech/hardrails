@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to .mcp.json in your project root and point 'command' at YOUR venv's python.exe (the path below is a placeholder). The device password is deliberately NOT configured here: set NETAGENT_PASSWORD in the shell you launch your MCP host from, and the server inherits it. Never put a password in this file.",
+  "mcpServers": {
+    "netagent": {
+      "command": "C:\\path\\to\\your\\venv\\Scripts\\python.exe",
+      "args": ["-m", "netagent.server"]
+    }
+  }
+}

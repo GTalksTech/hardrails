@@ -1,0 +1,12 @@
+{
+  "_comment": "STRUCTURE EXAMPLE ONLY. The real psirt_cache.json is generated from a live Cisco PSIRT openVuln API response by scripts/generate_psirt_cache.py. It is never hand-edited, and 'advisories' holds the raw advisory objects exactly as the API returned them.",
+  "snapshot": {
+    "retrieved_at": "1970-01-01T00:00:00+00:00",
+    "endpoint": "https://apix.cisco.com/security/advisories/v2/OSType/iosxe?version=REPLACE-ME",
+    "os_type": "iosxe",
+    "version": "REPLACE-ME",
+    "advisory_count": 0,
+    "generated_by": "scripts/generate_psirt_cache.py"
+  },
+  "advisories": []
+}

@@ -11,6 +11,18 @@ license = "Apache-2.0"
 authors = [{ name = "Garrett Masters (G Talks Tech)" }]
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2"]
+
+# `pip install hardrails` stays light: the spec + the data models. The full
+# runnable agent (MCP server, Netmiko device access, live CVE lookup, NetBox
+# intent drift) is opt-in:  pip install hardrails[lab]
+[project.optional-dependencies]
+lab = [
+    "fastmcp>=2.0",
+    "netmiko>=4.3",
+    "pyyaml>=6",
+    "httpx>=0.27",
+    "pynetbox>=7",
+]
 keywords = ["ai-agents", "network-automation", "mcp", "guardrails", "bounded-agents", "netmiko"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -26,3 +38,8 @@ Channel = "https://www.youtube.com/@GTalksTechOfficial"
 
 [tool.setuptools]
 packages = ["netagent"]
+
+[tool.setuptools.package-data]
+# The inventory and the provenance-stamped PSIRT cache travel with an install
+# so clone-and-run works offline (no Cisco API credentials needed to reproduce).
+netagent = ["inventory.yaml", "data/*.json", "data/*.json.example", "data/README.md"]
