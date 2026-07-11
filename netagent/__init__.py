@@ -1,11 +1,9 @@
 # ============================================================
 # Module:       __init__.py
 # Purpose:      Package marker for the Hardrails reference implementation
-#               (bounded network agent). Models today; MCP server lands
-#               with the full build.
+#               (bounded network agent).
 # Dependencies: none
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets.
 # ============================================================

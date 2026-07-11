@@ -5,7 +5,6 @@
 #               run free, the apply tool is gated behind a human approval.
 # Dependencies: fastmcp, pydantic>=2 (+ netmiko/pyyaml via the netagent modules)
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Credentials are
 #               read from the NETAGENT_PASSWORD env var at runtime. Part of

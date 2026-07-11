@@ -9,7 +9,7 @@ network without giving it the ability to take one down.
 | | |
 |---|---|
 | **Version** | 1.0 |
-| **Status** | Final. Publishes with EP010. |
+| **Status** | Final. |
 | **Date** | 2026-07-06 |
 | **Author** | Garrett Masters, G Talks Tech |
 | **License** | CC BY 4.0 for this document; Apache-2.0 for the reference implementation |

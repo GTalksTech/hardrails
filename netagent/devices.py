@@ -5,7 +5,6 @@
 #               structurally refuses to send configuration commands.
 # Dependencies: netmiko, pyyaml
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Part of the
 #               Hardrails framework reference implementation.

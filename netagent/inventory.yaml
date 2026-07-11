@@ -2,7 +2,6 @@
 # File:     inventory.yaml
 # Purpose:  Static device inventory for the bounded network-agent.
 # Author:   G Talks Tech
-# Episode:  EP010-L-ai-network-agents
 # GitHub:   github.com/GTalksTech/hardrails
 # Notes:    Public by design. NO PASSWORDS here -- credentials are supplied at
 #           runtime via the NETAGENT_PASSWORD env var or an interactive getpass

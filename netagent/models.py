@@ -5,7 +5,6 @@
 #               is a validated object -- the schema IS part of the boundary.
 # Dependencies: pydantic>=2
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Part of the
 #               Hardrails framework reference implementation.

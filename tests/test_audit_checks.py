@@ -7,7 +7,6 @@
 # Usage:        pytest tests/  (from the network-agent-mcp directory)
 # Dependencies: pytest, pydantic>=2 (via netagent.models)
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. All IPs are
 #               REAL lab IPs (RFC1918) -- the lab is meant to be replicated.

@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 # ============================================================
 # Script:       seed_netbox.py
-# Purpose:      Populate a local NetBox with the EP010 lab's INTENT (the
+# Purpose:      Populate a local NetBox with the demo lab's INTENT (the
 #               "source of truth" the bounded agent audits live state against).
 # Usage:        python seed_netbox.py            (reads NETBOX_URL / NETBOX_TOKEN)
 #               python seed_netbox.py --dry-run  (print actions, change nothing)
 # Dependencies: pynetbox>=7
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. The NetBox URL and
 #               API token come from the NETBOX_URL / NETBOX_TOKEN env vars only,
 #               never a file or a CLI flag. All addresses are REAL home-lab
 #               RFC1918 values (the lab exists to be replicated).
 # ============================================================
-"""Seed a local NetBox instance with the EP010 lab intent.
+"""Seed a local NetBox instance with the demo lab intent.
 
 This is the "what the network is SUPPOSED to be." The agent pulls live state
 with Netmiko and diffs it against what this script writes. Two records here are
@@ -236,7 +235,7 @@ def _id(rec):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Seed NetBox with EP010 lab intent.")
+    ap = argparse.ArgumentParser(description="Seed NetBox with demo lab intent.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print what would change; write nothing.")
     args = ap.parse_args()

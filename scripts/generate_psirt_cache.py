@@ -8,7 +8,6 @@
 #               python scripts/generate_psirt_cache.py --os-type iosxe --version 17.16.1a
 # Dependencies: httpx (via netagent.cve_source)
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Credentials are
 #               read from environment variables only. Part of the Hardrails

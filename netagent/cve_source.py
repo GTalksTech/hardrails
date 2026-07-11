@@ -6,7 +6,6 @@
 #               that prefers live and falls back honestly.
 # Dependencies: httpx (live client); stdlib json/pathlib for the cache
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Part of the
 #               Hardrails framework reference implementation.

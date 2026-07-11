@@ -8,8 +8,11 @@ This is the reference implementation of **Hardrails**: *deterministic
 boundaries around a non-deterministic agent.* Guardrails ask. Hardrails
 enforce. Read the method itself in [`hardrails-spec.md`](../hardrails-spec.md).
 
-> Built for EP010 of [G Talks Tech](https://gtalkstech.com). Home-lab tool, not
-> a production platform -- see the honesty note at the bottom.
+> A [G Talks Tech](https://gtalkstech.com) build. Home-lab tool, not a
+> production platform -- see the honesty note at the bottom. The full build
+> walkthrough video lands on
+> [the channel](https://www.youtube.com/@GTalksTechOfficial); this line
+> becomes that link when it publishes.
 
 ## The idea in one paragraph
 
@@ -101,13 +104,15 @@ $env:NETBOX_TOKEN = "nbt_..."                  # use a READ-ONLY token
 ```
 
 Use a **read-only** NetBox token here: the drift check only reads intent, so
-its credential should not be able to write (least privilege). NetBox 4.6+
-issues v2 tokens as `nbt_<key>.<secret>` -- export the FULL value. Without a
+its credential should not be able to write (least privilege). To mint one
+properly -- and get proof it cannot write -- run
+`python scripts/provision_netbox_ro_token.py`. NetBox 4.6+ issues v2 tokens
+as `nbt_<key>.<secret>` -- export the FULL value. Without a
 token the sweep fails loudly (`IntentSourceUnavailable`) rather than reporting
 a clean bill of intent it never checked -- same honesty rule as the CVE path.
 
 Edit `netagent/inventory.yaml` to match your lab's hostnames and IPs. The
-shipped inventory uses the real EP010 home-lab addresses (all RFC1918).
+shipped inventory uses the build's real home-lab addresses (all RFC1918).
 
 ## Wire it into Claude Code
 

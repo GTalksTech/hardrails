@@ -6,7 +6,6 @@
 #               ranked worst-first. The CVE backend is intentionally abstract.
 # Dependencies: pydantic>=2 (via models); a CVESource implementation at runtime
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Part of the
 #               Hardrails framework reference implementation.

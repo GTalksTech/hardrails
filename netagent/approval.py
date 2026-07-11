@@ -6,7 +6,6 @@
 #               person.
 # Dependencies: pydantic>=2 (via models)
 # Author:       G Talks Tech
-# Episode:      EP010-L-ai-network-agents
 # GitHub:       github.com/GTalksTech/hardrails
 # Notes:        Public by design. No credentials, no secrets. Part of the
 #               Hardrails framework reference implementation.
