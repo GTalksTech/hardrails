@@ -8,12 +8,12 @@ network without giving it the ability to take one down.
 
 | | |
 |---|---|
-| **Version** | 1.0 |
+| **Version** | 1.0.1 |
 | **Status** | Final. |
-| **Date** | 2026-07-06 |
+| **Date** | 2026-07-11 |
 | **Author** | Garrett Masters, G Talks Tech |
 | **License** | CC BY 4.0 for this document; Apache-2.0 for the reference implementation |
-| **Reference implementation** | `network-agent-mcp` (github.com/GTalksTech/hardrails) |
+| **Reference implementation** | `netagent` (github.com/GTalksTech/hardrails) |
 
 ---
 
@@ -58,6 +58,16 @@ mid-market network, actually builds this. That is what this document is.
   action the agent takes passes through it.
 - **Boundary.** Deterministic code in the tool layer that enforces what the
   agent can never do. Enforced, not requested.
+- **Guardrail.** As used in this document and its tagline: a rule expressed
+  to the model in language, the way most teams deploy one today (a
+  system-prompt "you must never," a persona, a policy paragraph). That is a
+  request to the model, so it asks. Note the distinction from guardrail
+  PRODUCTS such as NVIDIA NeMo Guardrails and Guardrails AI, which do real
+  enforcement at the text layer: they validate and block model input and
+  output in code. Those tools bound what a model says, and they complement
+  this method. A Boundary bounds what an agent does. An output validator
+  can reject a bad answer; it cannot remove the agent's capability to push
+  a change.
 - **Dry run.** A proposed change rendered as exact commands and a diff,
   never committed.
 - **Approval gate.** A hard stop in the tool layer: execution suspends on a
@@ -331,12 +341,13 @@ that convergence honestly is part of the method's credibility.
 
 ## 11. Reference implementation
 
-`network-agent-mcp`: a bounded network agent built as a FastMCP server.
-Netmiko for device access, Pydantic models as the schema boundary, NetBox
-as the intent source of truth, Claude Code as the demo harness. Built for a
-3-node Cisco lab replicable on CML Free. Every principle in section 5 maps
-to code you can point at. It exists to teach the method, not to compete
-with the platforms. Fork it.
+`netagent` (github.com/GTalksTech/hardrails): a bounded network agent built
+as a FastMCP server, shipped in this repository. Netmiko for device access,
+Pydantic models as the schema boundary, NetBox as the intent source of
+truth, Claude Code as the demo harness. Built for a 3-node Cisco lab
+replicable on CML Free; install with `pip install hardrails[lab]` or clone
+and run. Every principle in section 5 maps to code you can point at. It
+exists to teach the method, not to compete with the platforms. Fork it.
 
 ## 12. Versioning
 
@@ -374,6 +385,12 @@ principles bump the major version.
 
 ## Changelog
 
+- **1.0.1 (2026-07-11).** Editorial, no normative changes. Defined
+  "guardrail" as used by the tagline (section 2) and distinguished
+  text-layer guardrail products (input/output validation, e.g. NVIDIA NeMo
+  Guardrails, Guardrails AI) from the action-layer Boundary. Updated
+  section 11 to match the shipped reference implementation (`netagent`,
+  `pip install hardrails[lab]`).
 - **1.0 (2026-07-06).** Named: Hardrails, after a full collision run (web,
   GitHub, npm, PyPI, Docker Hub, domains, trademark search). License locked:
   CC BY 4.0 (document), Apache-2.0 (reference implementation).
