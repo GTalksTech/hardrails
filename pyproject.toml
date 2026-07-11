@@ -11,6 +11,13 @@ license = "Apache-2.0"
 authors = [{ name = "Garrett Masters (G Talks Tech)" }]
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2"]
+keywords = ["ai-agents", "network-automation", "mcp", "guardrails", "bounded-agents", "netmiko"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+]
 
 # `pip install hardrails` stays light: the spec + the data models. The full
 # runnable agent (MCP server, Netmiko device access, live CVE lookup, NetBox
@@ -22,13 +29,6 @@ lab = [
     "pyyaml>=6",
     "httpx>=0.27",
     "pynetbox>=7",
-]
-keywords = ["ai-agents", "network-automation", "mcp", "guardrails", "bounded-agents", "netmiko"]
-classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
-    "Intended Audience :: System Administrators",
-    "Programming Language :: Python :: 3",
-    "Topic :: System :: Networking",
 ]
 
 [project.urls]
