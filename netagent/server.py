@@ -14,7 +14,7 @@
 
 This file is thin on purpose. It does not re-implement any policy -- it wires
 the agent's tools to the Boundary and the domain modules. The rule the whole
-episode rests on is visible in one place here: read tools are declared READ and
+framework rests on is visible in one place here: read tools are declared READ and
 run autonomously; `apply_remediation` is declared MUTATE and cannot run without
 an APPROVED, single-device ApprovalRequest. The boundary enforces that; the
 server just routes calls through it and hands blocks back to the agent as text.
@@ -32,6 +32,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from netagent import approval as approval_mod
+from netagent import artifacts as artifacts_mod
 from netagent import remediation as remediation_mod
 from netagent.audit import audit_security_posture as run_posture_sweep
 from netagent.boundary import Boundary, BoundaryViolation, ToolKind
@@ -73,7 +74,12 @@ class ResolveArgs(BaseModel):
     approval_id: str
     decision: str = Field(..., description="'approve' or 'reject'.")
     approver: str
-    reason: str = ""
+    reason: str = Field(
+        "",
+        description="REQUIRED non-empty: the human's explicit decision, e.g. "
+        "'Reviewed the diff on screen; approved for core-rtr-01 only'. An "
+        "empty reason is refused.",
+    )
 
 
 class ApplyArgs(BaseModel):
@@ -174,6 +180,12 @@ def propose_remediation(finding_id: str, device: str) -> Any:
     Read-only: it fetches the running-config, renders a diff, and returns the
     exact CLI for human review. It applies NOTHING. Returns a proposal_id to
     reference in request_approval.
+
+    A finding with no canned generator (NTP auth, non-HTTP CVEs, the
+    cross-device gap, drift) comes back as a STRUCTURED refusal --
+    `human_author_required: true` plus the reason -- not an exception. The
+    refusal is the honesty model working as designed, so it must read as a
+    normal result, never as a tool failure.
     """
     args = {"finding_id": finding_id, "device": device}
 
@@ -186,7 +198,18 @@ def propose_remediation(finding_id: str, device: str) -> Any:
             }
         with DeviceConnection(get_device(device)) as conn:
             running = conn.get_running_config()
-        proposal = remediation_mod.build_proposal(finding, device, running)
+        try:
+            proposal = remediation_mod.build_proposal(finding, device, running)
+        except remediation_mod.RemediationError as err:
+            return {
+                "human_author_required": True,
+                "finding_id": finding_id,
+                "device": device,
+                "reason": str(err),
+                "message": "No automated remediation exists for this finding. "
+                "A human must author and review the change; nothing was "
+                "proposed and nothing will be applied.",
+            }
         proposal_id = f"{finding_id}:{device}"
         _proposals[proposal_id] = proposal
         payload = proposal.model_dump(mode="json")
@@ -203,8 +226,11 @@ def propose_remediation(finding_id: str, device: str) -> Any:
 def request_approval(finding_id: str, device: str) -> Any:
     """Open a PENDING human-approval gate for a previously built proposal.
 
-    Bookkeeping only -- touches no device. Returns an approval_id. Nothing can
-    be applied until a human resolves this via resolve_approval.
+    Bookkeeping only -- touches no device. Returns an approval_id AND writes the
+    on-disk approval artifact (approvals/<approval-id>.md: the commands, the
+    dry-run diff, the state) so the human has a reviewable file, not just chat
+    scrollback. Nothing can be applied until a human resolves this via
+    resolve_approval.
     """
     args = {"finding_id": finding_id, "device": device}
 
@@ -219,14 +245,21 @@ def request_approval(finding_id: str, device: str) -> Any:
         global _approval_counter
         _approval_counter += 1
         approval_id = f"appr-{_approval_counter}"
-        _approvals[approval_id] = approval_mod.create_approval_request(proposal)
+        request = approval_mod.create_approval_request(proposal)
+        _approvals[approval_id] = request
+        artifact = artifacts_mod.update_artifact(
+            approval_id, request, boundary.audit_log_path, "requested (pending)"
+        )
         return {
             "approval_id": approval_id,
             "state": "pending",
             "device": proposal.device,
             "config_commands": proposal.config_commands,
-            "message": "Awaiting human approval. A person must call "
-            "resolve_approval to approve or reject.",
+            "approval_artifact": str(artifact) if artifact else None,
+            "message": "Awaiting human approval. Show the human the dry-run "
+            "diff and this approval_id (the artifact file holds both); a "
+            "person must decide, then call resolve_approval with their "
+            "decision and reason.",
         }
 
     try:
@@ -241,8 +274,10 @@ def resolve_approval(
 ) -> Any:
     """Approve or reject a pending request (the human-in-the-loop decision).
 
-    `decision` is 'approve' or 'reject'. Requires a named approver -- an
-    anonymous approval is refused. This is the moment a person takes ownership.
+    `decision` is 'approve' or 'reject'. Requires a named approver AND a
+    non-empty reason describing the human's explicit decision -- an anonymous
+    or unexplained approval is refused. This is the moment a person takes
+    ownership, and the approval artifact is updated to record it.
     """
     args = {
         "approval_id": approval_id,
@@ -264,10 +299,17 @@ def resolve_approval(
                 return {"error": "decision must be 'approve' or 'reject'."}
         except approval_mod.ApprovalError as err:
             return {"error": str(err)}
+        artifact = artifacts_mod.update_artifact(
+            approval_id,
+            request,
+            boundary.audit_log_path,
+            f"{request.state.value} by {request.approver}: {request.reason}",
+        )
         return {
             "approval_id": approval_id,
             "state": request.state.value,
             "approver": request.approver,
+            "approval_artifact": str(artifact) if artifact else None,
             "resolved_at": request.resolved_at.isoformat() if request.resolved_at else None,
         }
 
@@ -282,10 +324,14 @@ def get_audit_log() -> Any:
     """Return the append-only audit log: every tool call, allowed or blocked.
 
     This is the receipt. On camera it proves exactly what the agent attempted
-    and what the boundary permitted.
+    and what the boundary permitted. `audit_log_path` is the durable JSONL copy
+    on disk -- the log survives a server restart, and you can point at the file.
     """
-    def _run() -> list[dict]:
-        return [r.model_dump(mode="json") for r in boundary.audit_log()]
+    def _run() -> dict:
+        return {
+            "audit_log_path": str(boundary.audit_log_path),
+            "records": [r.model_dump(mode="json") for r in boundary.audit_log()],
+        }
 
     # Note: this call itself is recorded, so its own entry appears on the NEXT read.
     try:
@@ -307,19 +353,32 @@ def apply_remediation(approval_id: str, device: str) -> Any:
     whose device matches `device`. Even if it somehow slips through, the
     apply_approved() function re-asserts approval + single-device before entering
     config mode. Two gates, both server-side.
+
+    An UNKNOWN approval_id is routed through the boundary too (approval=None ->
+    audited BLOCK), never short-circuited into a bare error -- every call gets
+    its ToolCallRecord, and the block reason teaches the required flow.
     """
     args = {"approval_id": approval_id, "device": device}
 
+    # May be None (unknown id). Deliberately NOT returned early: the boundary
+    # must see and record the call either way.
     request = _approvals.get(approval_id)
-    if request is None:
-        return {"error": f"Unknown approval '{approval_id}'."}
 
     def _run() -> dict:
         output = remediation_mod.apply_approved(request.proposal, request)
+        artifact = artifacts_mod.update_artifact(
+            approval_id,
+            request,
+            boundary.audit_log_path,
+            # A short receipt of the outcome -- NEVER the device payload.
+            f"applied to {request.proposal.device}: "
+            f"{len(output)} chars of device output",
+        )
         return {
             "applied": True,
             "device": request.proposal.device,
             "commands": request.proposal.config_commands,
+            "approval_artifact": str(artifact) if artifact else None,
             "device_output": output,
         }
 

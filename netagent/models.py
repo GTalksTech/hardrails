@@ -72,6 +72,14 @@ class Finding(BaseModel):
     category: str = Field(
         ..., description="e.g. 'vulnerability', 'segmentation', 'hardening', 'drift'."
     )
+    remediation_kind: str = Field(
+        "",
+        description="Stable remediation strategy key the DETECTOR sets (it knows "
+        "what it found), e.g. 'disable_http', 'crypto'. remediation.py dispatches "
+        "on THIS, not on the coarse `category` -- so one category can hold findings "
+        "that need different fixes without cross-wiring. Empty ('') means no canned "
+        "generator applies and a human must author the change.",
+    )
     source: FindingSource
     evidence: list[str] = Field(
         default_factory=list,

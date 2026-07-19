@@ -6,7 +6,8 @@ device without a human approving one change, on one device, first.
 
 This is the reference implementation of **Hardrails**: *deterministic
 boundaries around a non-deterministic agent.* Guardrails ask. Hardrails
-enforce. Read the method itself in [`hardrails-spec.md`](../hardrails-spec.md).
+enforce. Read the method itself in
+[`hardrails-spec.md`](../hardrails-spec.md).
 
 > A [G Talks Tech](https://gtalkstech.com) build. Home-lab tool, not a
 > production platform -- see the honesty note at the bottom. The full build
@@ -48,9 +49,18 @@ itself.
 - **Dry-run before any change.** A remediation is a `RemediationProposal` (CLI +
   diff), never "run this."
 - **Human-in-the-loop.** Applying a proposal requires an `ApprovalRequest` that a
-  named human approved.
+  named human approved, with an explicit reason. Every approval also writes a
+  reviewable artifact -- `approvals/<approval-id>.md` (next to the audit log;
+  override with `NETAGENT_APPROVALS_DIR`) holding the exact commands, the
+  dry-run diff, the state, and a history of every transition -- so the diff the
+  human reviewed exists as a file, not just chat scrollback. Blocked applies
+  state the required flow in the block reason itself, so an agent that tries to
+  shortcut the procedure is corrected by the server, on any harness.
 - **One device per approval.** A change is never bundled across devices.
-- **Append-only audit log.** Every tool call -- allowed or blocked -- is recorded.
+- **Append-only audit log.** Every tool call -- allowed or blocked -- is recorded
+  in memory AND appended to a JSONL receipt on disk (`audit-log.jsonl` next to
+  this file by default; override with the `NETAGENT_AUDIT_LOG` env var). The
+  file survives a server restart; `get_audit_log` reports its path.
 - **Schema validation.** Malformed arguments are blocked before a device is touched.
 - **Least privilege.** Unknown tool or missing approval -> default deny.
 
@@ -161,10 +171,13 @@ Gated (requires approval): `apply_remediation`.
 - **NetBox drift check (real)**: diffs NetBox intent against gathered state --
   a VLAN recorded `deprecated` that is still configured on a device fires LOW,
   with the live config lines as evidence. Requires `NETBOX_TOKEN` (above).
-- **Cross-device segmentation (agent's job, by design)**: the CRITICAL
-  correlation is produced by the AGENT joining configs across devices, not a
-  coded grep -- which is why its `FindingSource` is `AGENT_REASONING`. The
-  function in `audit.py` documents the seam.
+- **Cross-device segmentation (hybrid, by design)**: a deterministic heuristic
+  in `audit.py` FLAGS A CANDIDATE -- one device's ACL appears to protect the
+  server subnet while another device offers an unfiltered routed path from the
+  same untrusted net -- with verbatim config lines from both devices as
+  evidence. The AGENT then confirms or rejects the candidate by reading both
+  configs, which is why its `FindingSource` is `AGENT_REASONING`: the code
+  narrows attention; it never asserts reachability as ground truth.
 - **Management-plane crypto check (stub)**: the lab this ships against is
   already hardened (no Telnet, no SSHv1, no type-7), so the check stays a
   documented TODO rather than code that never fires.
@@ -183,8 +196,9 @@ plus the honesty-rule cases (a broken NetBox lookup must raise, never read as
 ## Honesty note
 
 This is a **home-lab teaching tool**, not a production automation platform. It
-runs against a handful of Cisco IOL nodes over SSH with in-memory session state.
+runs against a handful of Cisco IOL nodes over SSH; proposals and approvals are
+in-memory session state (the audit log does persist, to the JSONL receipt).
 It is deliberately small so the boundary is easy to read. Before anything like
-this touches production you'd want persistent audit storage, real RBAC, secrets
-management, change windows, and far more testing. The value here is the
+this touches production you'd want durable proposal/approval state, real RBAC,
+secrets management, change windows, and far more testing. The value here is the
 *pattern* -- the boundary -- not the plumbing.

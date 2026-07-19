@@ -12,8 +12,8 @@
 # ============================================================
 """The boundary: deterministic rules around a non-deterministic agent.
 
-This is the heart of Hardrails. The thesis of the whole episode lives in
-this file, so it is written to be read aloud on camera.
+This is the heart of Hardrails. The whole thesis lives in this file,
+so it is written to be read top to bottom.
 
     An agent is a model plus a harness. The MODEL is non-deterministic -- it
     will occasionally reason its way to a bad tool call. So we do not trust the
@@ -39,7 +39,10 @@ Two rules make the boundary legible:
 from __future__ import annotations
 
 import enum
+import json
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from pydantic import BaseModel, ValidationError
@@ -50,6 +53,20 @@ from netagent.models import (
     ToolCallRecord,
     ToolDecision,
 )
+
+# The append-only audit log's on-disk home. Configurable via NETAGENT_AUDIT_LOG
+# (same env-only credential/config discipline as NETAGENT_PASSWORD); otherwise
+# it lands next to the server so it is discoverable for the on-camera
+# "here's the receipt, and here's the file" beat. The server dir is this
+# package's parent (where `python -m netagent.server` runs from).
+_AUDIT_LOG_ENV = "NETAGENT_AUDIT_LOG"
+_DEFAULT_AUDIT_LOG = Path(__file__).resolve().parent.parent / "audit-log.jsonl"
+
+
+def _resolve_audit_log_path() -> Path:
+    """Resolve the audit-log path from the environment, else the default."""
+    override = os.environ.get(_AUDIT_LOG_ENV)
+    return Path(override) if override else _DEFAULT_AUDIT_LOG
 
 
 class ToolKind(str, enum.Enum):
@@ -98,10 +115,16 @@ class Boundary:
     Register every tool once, then route each call through `guard()` (or the
     lower-level `check()` if you only want the verdict). Nothing else in the
     codebase is allowed to call a device without going through here.
+
+    The log is kept two ways, on purpose: `_log` is the fast in-memory list for
+    reads within a session, and `audit_log_path` is the durable receipt -- every
+    record is also appended to that JSONL file, one object per line, so the trail
+    survives a restart and can be pointed at on camera.
     """
 
     _tools: dict[str, ToolSpec] = field(default_factory=dict)
     _log: list[ToolCallRecord] = field(default_factory=list)
+    audit_log_path: Path = field(default_factory=_resolve_audit_log_path)
 
     # -- registration --------------------------------------------------------
 
@@ -166,6 +189,18 @@ class Boundary:
         # 4. Mutating tool. From here everything must be earned.
         return self._check_mutation(spec, arguments, approval)
 
+    # Every mutation BLOCK teaches the correct procedure (ENH 5). An agent that
+    # shortcuts -- skipping the request, self-approving in the same turn, or
+    # inventing an approval id -- is corrected by the boundary itself, in the
+    # block reason, harness-independent. The rules above the message are
+    # unchanged; only the message got richer.
+    _REQUIRED_FLOW = (
+        "Required flow: propose_remediation -> request_approval (creates an "
+        "approval ID and an on-disk artifact) -> present the dry-run diff and "
+        "approval ID to the human -> resolve_approval with the human's explicit "
+        "decision and reason -> apply_remediation with that approval_id."
+    )
+
     def _check_mutation(
         self,
         spec: ToolSpec,
@@ -176,14 +211,17 @@ class Boundary:
         if approval is None:
             return self._record(
                 spec.name, arguments, ToolDecision.BLOCKED,
-                "Mutating tool requires an approved ApprovalRequest. None supplied.",
+                "Mutating tool requires an approved ApprovalRequest, but none "
+                "was supplied -- the approval_id is missing or not known to "
+                f"this server. {self._REQUIRED_FLOW}",
             )
 
         if approval.state is not ApprovalState.APPROVED:
             return self._record(
                 spec.name, arguments, ToolDecision.BLOCKED,
                 f"ApprovalRequest is '{approval.state.value}', not 'approved'. "
-                "A human must approve before any change is applied.",
+                f"A human must approve before any change is applied. "
+                f"{self._REQUIRED_FLOW}",
             )
 
         # One device per approval -- NEVER bundle a change across devices. The
@@ -193,13 +231,15 @@ class Boundary:
         if not target or not isinstance(target, str):
             return self._record(
                 spec.name, arguments, ToolDecision.BLOCKED,
-                "Mutating call must name exactly one 'device' argument.",
+                f"Mutating call must name exactly one 'device' argument. "
+                f"{self._REQUIRED_FLOW}",
             )
         if approval.proposal.device != target:
             return self._record(
                 spec.name, arguments, ToolDecision.BLOCKED,
                 f"Approval is for '{approval.proposal.device}' but the call "
-                f"targets '{target}'. One device per approval -- no substitution.",
+                f"targets '{target}'. One device per approval -- no "
+                f"substitution. {self._REQUIRED_FLOW}",
             )
 
         return self._record(
@@ -261,16 +301,44 @@ class Boundary:
         decision: ToolDecision,
         reason: str,
     ) -> ToolDecision:
-        """Append one immutable-by-convention record and echo the decision."""
-        self._log.append(
-            ToolCallRecord(
-                tool_name=tool_name,
-                arguments=dict(arguments),
-                decision=decision,
-                reason=reason,
-            )
+        """Append one immutable-by-convention record and echo the decision.
+
+        The record goes to BOTH sinks: the in-memory list (fast reads) and the
+        JSONL receipt on disk (durable). The disk write is the last step so an
+        allowed call's `result_summary`, set later by `guard()`, is captured on
+        the NEXT record -- the same as it always was for the in-memory log.
+        """
+        record = ToolCallRecord(
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            decision=decision,
+            reason=reason,
         )
+        self._log.append(record)
+        self._persist(record)
         return decision
+
+    def _persist(self, record: ToolCallRecord) -> None:
+        """Append one record to the JSONL receipt (append-only, never truncate).
+
+        A write failure must not crash the gate -- the verdict is what protects
+        the device, and the in-memory record still stands. So a disk error is
+        swallowed here rather than turned into a BLOCKED demo. Same _summarize
+        discipline as the in-memory log: no full device payloads reach the file.
+        """
+        try:
+            self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_log_path.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(record.model_dump(mode="json"), separators=(",", ":"))
+                    + "\n"
+                )
+        except (OSError, TypeError, ValueError):
+            # Best-effort receipt: never let a bad path OR an unserializable
+            # argument value break the boundary. (pydantic's serialization
+            # error is a ValueError; json.dumps raises TypeError.) The verdict
+            # and the in-memory record still stand either way.
+            pass
 
 
 def _summarize(result: object) -> str:

@@ -77,8 +77,24 @@ def _resolve(
             f"Request already {request.state.value}; cannot change it to "
             f"{new_state.value}. Approvals are single-use."
         )
+    # HONEST LIMITATION (documented, deliberate -- decided 2026-07-18): the
+    # approver name and reason below are supplied by whoever calls the tool,
+    # which in this demo is the MODEL relaying them. The server enforces
+    # PROCESS -- the state machine, single-device scope, the audit log, the
+    # on-disk approval artifact -- not human IDENTITY: it cannot prove a person
+    # actually typed this. Attesting the human needs a channel the model cannot
+    # write to: today, the host's outer approval gate; on the Hardrails
+    # roadmap, a server-owned out-of-band approval surface (e.g. a localhost
+    # approval page the human clicks directly). Deferred on purpose -- do not
+    # quietly "solve" identity here with anything the model could also supply.
     if not approver or not approver.strip():
         raise ApprovalError("An approver name is required to resolve a request.")
+    if not reason or not reason.strip():
+        raise ApprovalError(
+            "A non-empty reason is required to resolve a request -- record the "
+            "human's explicit decision (e.g. 'Reviewed the diff on screen; "
+            "approved for core-rtr-01 only')."
+        )
 
     request.state = new_state
     request.approver = approver

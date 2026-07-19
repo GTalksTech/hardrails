@@ -54,21 +54,31 @@ class RemediationError(RuntimeError):
 # ----------------------------------------------------------------------------
 # Command generation.
 # ----------------------------------------------------------------------------
-# Each generator returns the exact CLI a human would review for one finding
-# CATEGORY, targeting ONE device. These are intentionally small and legible --
-# the point of the demo is that the human reads the commands before approving,
-# so they must be readable. Categories with no safe canned fix return an empty
-# list and force a human to author the change (we never invent config we are
-# unsure of -- that would defeat the honesty thesis).
+# Each generator returns the exact CLI a human would review for one finding's
+# REMEDIATION KIND, targeting ONE device. These are intentionally small and
+# legible -- the point of the demo is that the human reads the commands before
+# approving, so they must be readable. A finding whose remediation_kind has no
+# safe canned generator forces a human to author the change (we never invent
+# config we are unsure of -- that would defeat the honesty thesis).
+#
+# Why dispatch on remediation_kind, not category (BUG 1): `category` is a coarse
+# human taxonomy -- 'hardening' held BOTH the NTP finding and, before this fix,
+# routed into the HTTP generator, so proposing the NTP finding emitted
+# `no ip http server` under an NTP label. The detector that produced a finding
+# knows exactly what it found, so IT stamps the remediation_kind; here we only
+# map a kind to its (verified-safe) command set.
 
 
-def _remediate_hardening(finding: Finding, device: str) -> list[str]:
-    """Mitigations for the hardening / CVE-exposure findings.
+def _remediate_cve_http(finding: Finding, device: str) -> list[str]:
+    """Mitigation for the HTTP-server CVE exposure (CVE-2025-20334 only).
 
     For CVE-2025-20334 (IOS XE HTTP API command injection) there is no vendor
     patch below 17.17.1, but the attack surface is the web server -- which is
     unused in this lab. Disabling it REMOVES the exposure without a code upgrade.
-    We are careful on camera to call this a mitigation, not a patch.
+    We are careful on camera to call this a mitigation, not a patch. This
+    generator is reached ONLY for findings the detector stamped
+    remediation_kind='disable_http' -- never for a non-HTTP CVE, whose fix is an
+    image upgrade a human must schedule.
     """
     return [
         "no ip http server",
@@ -89,18 +99,22 @@ def _remediate_crypto(finding: Finding, device: str) -> list[str]:
     ]
 
 
-# Deterministic dispatch by finding category. Unknown categories -> no canned
-# fix (empty list), which surfaces as "human must author this" rather than a
-# fabricated command set.
+# Deterministic dispatch by finding REMEDIATION KIND (set by the detector), not
+# by the coarse category. A remediation_kind with no entry here -> no canned fix,
+# which surfaces as "a human must author this" rather than a fabricated command
+# set. This is what keeps one category (e.g. 'hardening', 'vulnerability') from
+# cross-wiring findings that need different fixes.
 _GENERATORS = {
-    "hardening": _remediate_hardening,
-    "vulnerability": _remediate_hardening,
-    "crypto": _remediate_crypto,
-    # TODO: 'segmentation' (the cross-device CRITICAL) is deliberately NOT auto-
-    # generated. That fix spans the seam between two devices and must be authored
-    # per-device by a human -- exactly the kind of change we refuse to bundle.
-    # TODO: 'drift' remediation depends on NetBox intent; wire it once the NetBox
-    # source-of-truth diff (audit.py) is live.
+    "disable_http": _remediate_cve_http,  # CVE-2025-20334 HTTP-server exposure ONLY
+    "crypto": _remediate_crypto,          # legacy mgmt-plane crypto (config-only)
+    # Deliberately NO entry -> human must author:
+    #   'ntp_auth'     -- NTP auth needs a human-chosen key; inventing one would
+    #                     violate the honesty thesis (Option B, locked).
+    #   'upgrade'      -- non-HTTP CVEs are fixed by an image upgrade, not config.
+    #   'segmentation' -- the cross-device CRITICAL spans the seam between two
+    #                     devices and must be authored per-device; never bundled.
+    #   'drift'        -- depends on NetBox intent; author per the diff.
+    #   ''             -- unset: no canned fix.
 }
 
 
@@ -113,7 +127,8 @@ def build_proposal(
 
     Read-only and side-effect-free. Raises if `device` is not one this finding
     implicates (you cannot remediate a device the finding does not name), or if
-    the category has no canned generator (a human must author the change).
+    the finding's remediation_kind has no canned generator (a human must author
+    the change).
 
     `running_config` is passed in by the caller (fetched via the read path) so
     this function never opens its own connection -- it only renders a diff.
@@ -124,18 +139,19 @@ def build_proposal(
             f"Implicated devices: {', '.join(finding.devices)}."
         )
 
-    generator = _GENERATORS.get(finding.category)
+    generator = _GENERATORS.get(finding.remediation_kind)
     if generator is None:
         raise RemediationError(
-            f"No automated remediation for category '{finding.category}'. "
+            f"No automated remediation for finding '{finding.id}' "
+            f"(remediation_kind '{finding.remediation_kind or 'unset'}'). "
             "This change must be authored and reviewed by a human."
         )
 
     commands = generator(finding, device)
     if not commands:
         raise RemediationError(
-            f"Category '{finding.category}' produced no commands for {device}. "
-            "Human authoring required."
+            f"Remediation kind '{finding.remediation_kind}' produced no commands "
+            f"for {device}. Human authoring required."
         )
 
     diff = _render_dry_run_diff(running_config, commands)
