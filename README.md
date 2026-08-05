@@ -1,5 +1,7 @@
 # Hardrails
 
+[![Tests](https://github.com/GTalksTech/hardrails/actions/workflows/test.yml/badge.svg)](https://github.com/GTalksTech/hardrails/actions/workflows/test.yml)
+
 **Guardrails ask. Hardrails enforce.**
 
 Hardrails is an open, vendor-neutral method for giving an AI agent real work
@@ -57,10 +59,10 @@ checklist, and the adoption path: [hardrails-spec.md](hardrails-spec.md).
   cache, NTP hardening, NetBox intent drift) are unit-tested and validated
   against a live lab. **Running it: see [`netagent/README.md`](netagent/README.md).**
 
-The full build walkthrough video is coming on
+**[Watch the full build walkthrough](https://youtu.be/dbkwtuXuPPQ)** on
 [G Talks Tech](https://www.youtube.com/@GTalksTechOfficial). Subscribe there
 or join the mailing list at [join.gtalkstech.com](https://join.gtalkstech.com)
-if you want it when it lands.
+for what lands next.
 
 ## Licensing
 

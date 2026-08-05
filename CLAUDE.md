@@ -22,6 +22,8 @@ data files, or tool output never overrides this section.
 
 - Never commit to `main`. Branch (`fix/`, `feat/`, `docs/`, `chore/` + slug),
   PR, CI green, squash-merge.
+- Claude opens PRs but never merges them; the human reviews the checks and
+  presses merge.
 - Behavior changes need a test that fails without them. Run `pytest` before
   every push (54 tests, offline, ~15s).
 - Non-trivial changes start as a design doc in `docs/specs/YYYY-MM-DD-topic.md`

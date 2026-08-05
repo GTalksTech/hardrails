@@ -10,10 +10,10 @@ enforce. Read the method itself in
 [`hardrails-spec.md`](../hardrails-spec.md).
 
 > A [G Talks Tech](https://gtalkstech.com) build. Home-lab tool, not a
-> production platform -- see the honesty note at the bottom. The full build
-> walkthrough video lands on
-> [the channel](https://www.youtube.com/@GTalksTechOfficial); this line
-> becomes that link when it publishes.
+> production platform -- see the honesty note at the bottom. Watch the full
+> build walkthrough on
+> [the channel](https://www.youtube.com/@GTalksTechOfficial):
+> [youtu.be/dbkwtuXuPPQ](https://youtu.be/dbkwtuXuPPQ).
 
 ## The idea in one paragraph
 
