@@ -197,6 +197,33 @@ class TestConsolidation:
         assert _check_cve(states, src) == []
 
 
+class TestCountArithmetic:
+    """Issue #5: the finding states its own count arithmetic.
+
+    The consolidated count, the separately-reported count, and the total must
+    all live in the finding text and sum -- narration should never have to
+    (and never get to) choose between 20, 21, and 22.
+    """
+
+    def test_summary_states_consolidated_and_total(self):
+        # 20 consolidated + 2 condition-checked heroes = 22 version-matched.
+        states, src = _states(_HTTP_ON, [HTTP_REC, SSL_REC] + OTHER_RECS)
+        summary = _by_id(_check_cve(states, src))["cve-upgrade-summary"]
+        assert "20 additional advisories (of 22 version-matched)" in summary.title
+        # The separately-reported advisories are NAMED, not just counted.
+        assert _CVE_HTTP in summary.rationale
+        assert _CVE_SSL in summary.rationale
+
+    def test_separate_count_is_computed_not_hardcoded(self):
+        # Only one hero in the feed -> total drops to 21 and only that CVE
+        # is named as separately reported.
+        states, src = _states(_HTTP_ON, [HTTP_REC] + OTHER_RECS)
+        summary = _by_id(_check_cve(states, src))["cve-upgrade-summary"]
+        assert "20 additional advisories (of 21 version-matched)" in summary.title
+        assert _CVE_HTTP in summary.rationale
+        assert _CVE_SSL not in summary.rationale
+
+
 class TestRankingAcrossChecks:
     def test_segmentation_critical_outranks_http_high_outranks_ssl(self):
         # Reuse the segmentation fixtures shape inline: a minimal gap.
