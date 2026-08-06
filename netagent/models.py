@@ -27,6 +27,7 @@ plumbing. Two choices here ARE the boundary philosophy:
 from __future__ import annotations
 
 import enum
+import uuid
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
@@ -35,6 +36,11 @@ from pydantic import BaseModel, Field
 def _utcnow() -> datetime:
     """Timezone-aware UTC timestamp (audit records must be unambiguous)."""
     return datetime.now(timezone.utc)
+
+
+def _new_call_id() -> str:
+    """Unique id linking a call record to its follow-up result record."""
+    return uuid.uuid4().hex
 
 
 class Severity(enum.IntEnum):
@@ -150,8 +156,22 @@ class ToolDecision(str, enum.Enum):
 
 
 class ToolCallRecord(BaseModel):
-    """One line in the append-only audit log. Every tool call gets one."""
+    """One line in the append-only audit log. Every tool call gets one.
 
+    Persisted at DECISION time -- before the tool runs, so a crash mid-
+    execution can never lose the verdict. That means `result_summary` is
+    empty on the persisted line; the outcome follows as a ToolResultRecord
+    linked by `call_id` (issue #6). In memory the summary is set on this
+    record directly, post-execution, as it always was.
+    """
+
+    record_type: str = Field(
+        "call", description="Line discriminator in the JSONL receipt."
+    )
+    call_id: str = Field(
+        default_factory=_new_call_id,
+        description="Identity a follow-up ToolResultRecord references.",
+    )
     timestamp: datetime = Field(default_factory=_utcnow)
     tool_name: str
     arguments: dict = Field(default_factory=dict)
@@ -159,6 +179,27 @@ class ToolCallRecord(BaseModel):
     reason: str = Field(
         "", description="Why the boundary allowed/blocked it (e.g. schema reject)."
     )
+    result_summary: str = Field(
+        "", description="Short outcome note. Never the full device payload."
+    )
+
+
+class ToolResultRecord(BaseModel):
+    """Follow-up line for an EXECUTED call: the outcome, appended after the fact.
+
+    The receipt is append-only and the call's verdict is written before the
+    tool runs, so the outcome cannot land on that line without rewriting it.
+    It is appended as this second record instead, linked by `call_id`. Blocked
+    calls never get one -- nothing executed, so the decision line is complete.
+    """
+
+    record_type: str = Field(
+        "result", description="Line discriminator in the JSONL receipt."
+    )
+    call_id: str = Field(
+        ..., description="The ToolCallRecord this outcome belongs to."
+    )
+    timestamp: datetime = Field(default_factory=_utcnow)
     result_summary: str = Field(
         "", description="Short outcome note. Never the full device payload."
     )

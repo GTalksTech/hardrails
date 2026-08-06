@@ -52,6 +52,7 @@ from netagent.models import (
     ApprovalState,
     ToolCallRecord,
     ToolDecision,
+    ToolResultRecord,
 )
 
 # The append-only audit log's on-disk home. Configurable via NETAGENT_AUDIT_LOG
@@ -264,6 +265,10 @@ class Boundary:
         result. On BLOCK it raises BoundaryViolation carrying the record, so the
         caller can return the reason to the agent verbatim -- the block itself is
         already logged.
+
+        On disk the outcome is a follow-up ToolResultRecord: the decision line
+        was persisted before execution (append-only -- it is never rewritten),
+        so the summary is APPENDED as a second record linked by call_id.
         """
         decision = self.check(tool_name, arguments, approval)
         record = self._log[-1]  # check() always appends exactly one record.
@@ -275,8 +280,18 @@ class Boundary:
             result = execute()
         except Exception as exc:  # noqa: BLE001 -- we record then re-raise.
             record.result_summary = f"ERROR during execution: {type(exc).__name__}: {exc}"
+            self._persist(
+                ToolResultRecord(
+                    call_id=record.call_id, result_summary=record.result_summary
+                )
+            )
             raise
         record.result_summary = _summarize(result)
+        self._persist(
+            ToolResultRecord(
+                call_id=record.call_id, result_summary=record.result_summary
+            )
+        )
         return result
 
     # -- audit trail ---------------------------------------------------------
@@ -304,9 +319,10 @@ class Boundary:
         """Append one immutable-by-convention record and echo the decision.
 
         The record goes to BOTH sinks: the in-memory list (fast reads) and the
-        JSONL receipt on disk (durable). The disk write is the last step so an
-        allowed call's `result_summary`, set later by `guard()`, is captured on
-        the NEXT record -- the same as it always was for the in-memory log.
+        JSONL receipt on disk (durable). The disk write happens HERE, at
+        decision time -- before any execution -- so a crash mid-tool-run can
+        never lose the verdict. The execution outcome therefore cannot appear
+        on this line; `guard()` appends it afterwards as a ToolResultRecord.
         """
         record = ToolCallRecord(
             tool_name=tool_name,
@@ -318,7 +334,7 @@ class Boundary:
         self._persist(record)
         return decision
 
-    def _persist(self, record: ToolCallRecord) -> None:
+    def _persist(self, record: ToolCallRecord | ToolResultRecord) -> None:
         """Append one record to the JSONL receipt (append-only, never truncate).
 
         A write failure must not crash the gate -- the verdict is what protects
@@ -344,15 +360,15 @@ class Boundary:
 def _summarize(result: object) -> str:
     """Produce a short, non-leaky summary of a tool result for the audit log.
 
-    We never store the full device payload in the audit record -- a running-
-    config is large and can contain sensitive lines. One line of shape is
-    enough to prove what happened.
+    We never store device payload in the audit record -- not the full body and
+    not an excerpt. A `show run` result's FIRST line can already be a secret
+    (`enable secret 9 ...`), so the summary is shape only: type and size.
+    Shape is enough to prove what happened.
     """
     if result is None:
         return "ok (no return value)"
     if isinstance(result, str):
-        first = result.strip().splitlines()[0] if result.strip() else ""
-        return f"str, {len(result)} chars: {first[:60]}"
+        return f"str, {len(result)} chars, {len(result.splitlines())} line(s)"
     if isinstance(result, (list, tuple)):
         return f"{type(result).__name__} with {len(result)} item(s)"
     return f"{type(result).__name__}"
