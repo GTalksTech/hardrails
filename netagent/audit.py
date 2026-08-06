@@ -424,13 +424,21 @@ def _ssl_vpn_cve_finding(
 def _cve_upgrade_summary(
     states: list[_DeviceState], per_host: dict[str, list[CVERecord]]
 ) -> list[Finding]:
-    """Collapse every non-condition-checked advisory into ONE upgrade finding."""
+    """Collapse every non-condition-checked advisory into ONE upgrade finding.
+
+    The finding states its own count arithmetic (issue #5): consolidated count,
+    the separately-reported advisories BY NAME, and the version-matched total,
+    all in the finding text -- so the numbers a reader repeats come from the
+    record, never from whichever framing a narration happens to pick.
+    """
     special = {_CVE_HTTP_API.upper(), _CVE_SSL_VPN.upper()}
     others: dict[str, CVERecord] = {}  # cve_id -> record (deduped across devices)
+    separate: set[str] = set()  # condition-checked advisories actually in the feed
     hosts_affected: set[str] = set()
     for state in states:
         for record in per_host[state.hostname]:
             if record.cve_id.upper() in special:
+                separate.add(record.cve_id.upper())
                 continue
             others[record.cve_id.upper()] = record
             hosts_affected.add(state.hostname)
@@ -438,6 +446,19 @@ def _cve_upgrade_summary(
         return []
 
     count = len(others)
+    total = count + len(separate)
+    if separate:
+        breakdown = (
+            f"Count arithmetic: {total} version-matched advisories in total; "
+            f"{', '.join(sorted(separate))} reported as separate "
+            f"condition-checked findings; the remaining {count} are "
+            "consolidated here. "
+        )
+    else:
+        breakdown = (
+            f"Count arithmetic: all {total} version-matched advisories are "
+            "consolidated here (none has a separately checkable condition). "
+        )
     max_cvss = max(record.cvss for record in others.values())
     fixed_versions = sorted(
         {record.fixed_version for record in others.values() if record.fixed_version}
@@ -455,8 +476,8 @@ def _cve_upgrade_summary(
             id="cve-upgrade-summary",
             severity=Severity.MEDIUM,
             title=(
-                f"{count} additional advisories affect {os_label} on these "
-                "devices -- resolved by upgrade"
+                f"{count} additional advisories (of {total} version-matched) "
+                f"affect {os_label} on these devices -- resolved by upgrade"
             ),
             devices=hosts,
             category="vulnerability",
@@ -464,11 +485,12 @@ def _cve_upgrade_summary(
             source=FindingSource.DETERMINISTIC_CHECK,
             evidence=evidence,
             rationale=(
-                f"{count} further version-matched advisories (highest CVSS "
-                f"{max_cvss}) have no separately checkable exposure condition, so "
-                "we do not assert one -- the uniform remediation is an image "
-                "upgrade, not a per-advisory config change. First-fixed releases "
-                f"include: {', '.join(fixed_versions) or 'see advisories'}."
+                f"{breakdown}"
+                f"These {count} advisories (highest CVSS {max_cvss}) have no "
+                "separately checkable exposure condition, so we do not assert "
+                "one -- the uniform remediation is an image upgrade, not a "
+                "per-advisory config change. First-fixed releases include: "
+                f"{', '.join(fixed_versions) or 'see advisories'}."
             ),
             recommended_remediation=(
                 "Schedule an IOS XE upgrade to a release that clears these "
