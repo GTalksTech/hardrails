@@ -141,3 +141,44 @@ class TestProposeRefusalIsCleanResult:
         payload = server.propose_remediation("cve-2025-20334-http-api", "core-rtr-01")
         assert payload["human_author_required"] is True
         assert "does not implicate" in payload["reason"]
+
+
+class TestProposalTeachesTheNextStep:
+    """Issue #4: the server teaches its own flow at every seam.
+
+    Blocked mutations prescribe the full sequence and request_approval's
+    payload instructs the resolve step -- propose_remediation's success
+    payload was the one seam that relied on the tool description alone.
+    Field testing showed the consequence: the agent presented the diff and
+    stopped, so no approval id or artifact existed at the moment the human
+    was actually reviewing. The payload now instructs the very next call.
+    """
+
+    _FINDING = dict(
+        id="cve-2025-20334-http-api",
+        severity=Severity.HIGH,
+        title="CVE-2025-20334",
+        devices=["core-rtr-01"],
+        category="vulnerability",
+        remediation_kind="disable_http",
+        source=FindingSource.DETERMINISTIC_CHECK,
+        rationale="test",
+    )
+
+    def test_success_payload_instructs_request_approval(self, wired):
+        _seed(Finding(**self._FINDING))
+        payload = server.propose_remediation("cve-2025-20334-http-api", "core-rtr-01")
+        message = payload["message"]
+        assert "request_approval" in message
+        assert "same turn" in message.lower()
+        # The instruction is copy-pasteable: it names the exact arguments.
+        assert "cve-2025-20334-http-api" in message
+        assert "core-rtr-01" in message
+
+    def test_refusal_payload_gets_no_next_step(self, wired):
+        """No proposal exists to approve, so teaching request_approval here
+        would instruct a call that can only fail."""
+        _seed(Finding(**{**self._FINDING, "remediation_kind": "ntp_auth"}))
+        payload = server.propose_remediation("cve-2025-20334-http-api", "core-rtr-01")
+        assert payload["human_author_required"] is True
+        assert "request_approval" not in str(payload)

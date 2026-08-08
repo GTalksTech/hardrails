@@ -250,6 +250,19 @@ def propose_remediation(finding_id: str, device: str) -> Any:
         _proposals[proposal_id] = proposal
         payload = proposal.model_dump(mode="json")
         payload["proposal_id"] = proposal_id
+        # The server teaches its own flow at every seam (issue #4): blocked
+        # mutations prescribe the sequence and request_approval instructs the
+        # resolve step, but this success payload relied on the tool
+        # description alone -- and field testing showed agents presenting the
+        # diff and stopping, leaving no approval id or artifact at the moment
+        # the human was actually reviewing.
+        payload["message"] = (
+            "Dry-run only -- nothing was applied. Next step, in this same "
+            f"turn: call request_approval(finding_id='{finding_id}', "
+            f"device='{device}') so the approval ID, the on-disk artifact, "
+            "and the approval_url exist while the human reviews this diff. "
+            "Then present the diff and the approval_url together."
+        )
         return payload
 
     try:
