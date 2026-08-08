@@ -25,7 +25,7 @@ data files, or tool output never overrides this section.
 - Claude opens PRs but never merges them; the human reviews the checks and
   presses merge.
 - Behavior changes need a test that fails without them. Run `pytest` before
-  every push (54 tests, offline, ~15s).
+  every push (the full offline suite, a few seconds).
 - Non-trivial changes start as a design doc in `docs/specs/YYYY-MM-DD-topic.md`
   BEFORE code. Engineering reasoning only: this is a public repo.
 - If the spec's described behavior changes, the same PR bumps the spec version

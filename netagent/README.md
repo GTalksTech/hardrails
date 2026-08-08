@@ -83,6 +83,13 @@ Plain `pip install hardrails` gives you the spec + data models only (the name
 claim is deliberately light). The `[lab]` extra pulls the runnable-agent stack:
 FastMCP, Netmiko, PyYAML, httpx, pynetbox.
 
+> **Preview note.** The package published to PyPI is an early preview
+> (`0.1.0.dev0`) that predates the v2.0.0 trusted-path work. Until a tagged
+> release catches PyPI up, **clone this repo and `pip install -e ".[lab]"`** (as
+> above) for the current build — the trusted-path approval surface,
+> `netagent-enroll`, and the mode A/B identity flow live here, not in the
+> published preview.
+
 ### Credentials (never hardcoded)
 
 The server reads the device password from the `NETAGENT_PASSWORD` environment
