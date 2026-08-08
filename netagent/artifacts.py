@@ -32,9 +32,15 @@ and the audit log are the enforcement; this file is the human-readable receipt.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
-from netagent.models import ApprovalRequest, _utcnow
+from netagent.models import (
+    ApprovalChannel,
+    ApprovalRequest,
+    ApprovalState,
+    _utcnow,
+)
 
 # Where artifacts live. Same env-only configuration discipline as
 # NETAGENT_AUDIT_LOG; the default keeps the receipt next to the audit log so
@@ -69,9 +75,19 @@ def update_artifact(
     rather than raising, so a bad path cannot break the approval flow. The
     caller surfaces the None honestly (no path claimed that was not written).
     """
+    # The id becomes a filename, so it is validated at the sink even though
+    # callers only pass server-issued ids ('appr-3'): a separator-bearing or
+    # otherwise malformed id must never reach path arithmetic, and the
+    # normalized file path must land inside the approvals directory. Same
+    # best-effort contract as a failed write -- no artifact, return None.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", approval_id):
+        return None
+    directory = str(resolve_approvals_dir(audit_log_path).resolve())
+    fullpath = os.path.normpath(os.path.join(directory, approval_id + ".md"))
+    if not fullpath.startswith(directory + os.sep):
+        return None
+    directory, path = Path(directory), Path(fullpath)
     _events.setdefault(approval_id, []).append((_utcnow().isoformat(), event))
-    directory = resolve_approvals_dir(audit_log_path)
-    path = directory / f"{approval_id}.md"
     try:
         directory.mkdir(parents=True, exist_ok=True)
         path.write_text(_render(approval_id, request), encoding="utf-8")
@@ -84,10 +100,21 @@ def _render(approval_id: str, request: ApprovalRequest) -> str:
     """Render the complete current story of one approval as markdown."""
     proposal = request.proposal
     resolved = request.resolved_at.isoformat() if request.resolved_at else "--"
+    # The channel line is the identity claim, stated at the artifact's
+    # strength: a pending request has no decision yet ('--'); a trusted-path
+    # resolution names the channel; a tool-channel resolution is marked
+    # unattested so the weaker claim is visible on the receipt itself.
+    if request.state is ApprovalState.PENDING:
+        channel = "--"
+    elif request.channel is ApprovalChannel.TRUSTED_PATH:
+        channel = request.channel.value
+    else:
+        channel = f"{request.channel.value} (unattested)"
     lines = [
         f"# Approval {approval_id}",
         "",
         f"- **State:** {request.state.value}",
+        f"- **Channel:** {channel}",
         f"- **Finding:** {proposal.finding_id}",
         f"- **Device:** {proposal.device}",
         f"- **Requested at:** {request.requested_at.isoformat()}",

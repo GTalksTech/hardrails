@@ -26,19 +26,29 @@ deployment would persist these, but the boundary logic would not change.
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+import netagent
 from netagent import approval as approval_mod
 from netagent import artifacts as artifacts_mod
 from netagent import remediation as remediation_mod
+from netagent import trusted_path as trusted_path_mod
 from netagent.audit import audit_security_posture as run_posture_sweep
 from netagent.boundary import Boundary, BoundaryViolation, ToolKind
 from netagent.cve_source import ChainedCVESource
 from netagent.devices import DeviceConnection, get_device, load_inventory
-from netagent.models import ApprovalRequest, Finding, RemediationProposal
+from netagent.models import (
+    ApprovalRequest,
+    Finding,
+    RemediationProposal,
+    ToolDecision,
+)
 
 mcp = FastMCP("netagent")
 boundary = Boundary()
@@ -55,6 +65,31 @@ _findings: dict[str, Finding] = {}
 _proposals: dict[str, RemediationProposal] = {}
 _approvals: dict[str, ApprovalRequest] = {}
 _approval_counter = 0
+
+# The live approval surface (mode `trusted` only; started in main()). Kept as
+# module state so request_approval can hand out per-approval URLs.
+_approval_surface: trusted_path_mod.ApprovalSurface | None = None
+
+# How the human's decision is allowed to enter (issue #9).
+_APPROVAL_MODE_ENV = "NETAGENT_APPROVAL_MODE"
+_SECRET_FILE_ENV = "NETAGENT_APPROVAL_SECRET_FILE"
+
+
+def _approval_mode() -> str:
+    """'trusted' (default) or 'tool' (testing purposes only).
+
+    Anything unrecognized resolves to 'trusted' -- a typo in an env var must
+    fail closed, never quietly open the relayed path.
+    """
+    mode = os.environ.get(_APPROVAL_MODE_ENV, "trusted").strip().lower()
+    return mode if mode == "tool" else "trusted"
+
+
+def _surface_url(approval_id: str) -> str | None:
+    """The approval page URL for one approval, or None if no live surface."""
+    if _approval_surface is None:
+        return None
+    return _approval_surface.url_for(approval_id)
 
 
 # -- argument schemas (the boundary validates these before a tool runs) ------
@@ -250,16 +285,31 @@ def request_approval(finding_id: str, device: str) -> Any:
         artifact = artifacts_mod.update_artifact(
             approval_id, request, boundary.audit_log_path, "requested (pending)"
         )
+        approval_url = _surface_url(approval_id)
+        if approval_url:
+            message = (
+                "Awaiting human approval. Give the human the approval_url -- "
+                "they open it on a device that is NOT this machine, review "
+                "the dry-run diff, and decide there. This server refuses "
+                "approvals relayed through resolve_approval."
+            )
+        else:
+            message = (
+                "Awaiting human approval. Show the human the dry-run diff "
+                "and this approval_id (the artifact file holds both); a "
+                "person must decide. (No live approval surface: in trusted "
+                "mode approvals are impossible until it is up; in the "
+                "testing-only tool mode resolve_approval relays the "
+                "decision.)"
+            )
         return {
             "approval_id": approval_id,
             "state": "pending",
             "device": proposal.device,
             "config_commands": proposal.config_commands,
             "approval_artifact": str(artifact) if artifact else None,
-            "message": "Awaiting human approval. Show the human the dry-run "
-            "diff and this approval_id (the artifact file holds both); a "
-            "person must decide, then call resolve_approval with their "
-            "decision and reason.",
+            "approval_url": approval_url,
+            "message": message,
         }
 
     try:
@@ -290,6 +340,19 @@ def resolve_approval(
         request = _approvals.get(approval_id)
         if request is None:
             return {"error": f"Unknown approval '{approval_id}'."}
+        # Demotion (issue #9): in trusted mode this tool cannot approve --
+        # approving is the one act that must not be relayable by the model.
+        # Rejecting stays tool-callable because a forged rejection fails safe:
+        # nothing gets applied.
+        if decision.lower() == "approve" and _approval_mode() == "trusted":
+            return {
+                "error": "Refused: this server accepts approvals only via "
+                "the approval page (the approval_url returned by "
+                "request_approval), opened on a device that is not this "
+                "machine. resolve_approval can only reject. "
+                "(NETAGENT_APPROVAL_MODE=tool enables the relayed mode, "
+                "for testing purposes only.)"
+            }
         try:
             if decision.lower() == "approve":
                 approval_mod.approve(request, approver, reason)
@@ -389,7 +452,137 @@ def apply_remediation(approval_id: str, device: str) -> Any:
         return _blocked(exc)
 
 
-if __name__ == "__main__":
-    # stdio transport is the default -- Claude Code launches this over stdio via
-    # the .mcp.json entry. No network listener, no open port.
+# ============================================================================
+# TRUSTED PATH -- the approval surface's bridge into session state.
+# ============================================================================
+
+# Enrollment record loaded once at startup (trusted mode). Module state so
+# the surface's resolve callback can verify without re-reading the file on
+# every submission.
+_enrollment_record: dict | None = None
+
+
+def _secret_file_path() -> Path:
+    """Env override, else next to the audit log (same discipline as the rest)."""
+    override = os.environ.get(_SECRET_FILE_ENV)
+    if override:
+        return Path(override)
+    return boundary.audit_log_path.parent / "approval-secret.json"
+
+
+def _trusted_resolve(
+    approval_id: str,
+    *,
+    decision: str,
+    approver: str,
+    reason: str,
+    submitted_secret: str,
+    source_ip: str,
+) -> dict:
+    """Resolve one approval from the surface, with full receipts.
+
+    Every outcome -- including refusals (local-source hits, bad secrets) --
+    lands one record on the same append-only log as the tool calls. The
+    arguments recorded NEVER include the submitted secret: the audit log
+    must not hold credential material, right or wrong.
+    """
+    args = {
+        "approval_id": approval_id,
+        "decision": decision,
+        "approver": approver,
+        "source_ip": source_ip,
+    }
+    request = _approvals.get(approval_id)
+    if request is None:
+        boundary.record_event(
+            "trusted_path.resolve", args, ToolDecision.BLOCKED,
+            f"Unknown approval '{approval_id}'.",
+        )
+        return {"error": f"Unknown approval '{approval_id}'."}
+    if _enrollment_record is None:
+        boundary.record_event(
+            "trusted_path.resolve", args, ToolDecision.BLOCKED,
+            "No enrollment loaded; approvals are impossible (fail-deny).",
+        )
+        return {"error": "No enrollment loaded; approvals are impossible."}
+    try:
+        trusted_path_mod.resolve_trusted(
+            request,
+            decision=decision,
+            approver=approver,
+            reason=reason,
+            submitted_secret=submitted_secret,
+            enrollment=_enrollment_record,
+            source_ip=source_ip,
+        )
+    except (trusted_path_mod.TrustedPathError, approval_mod.ApprovalError) as err:
+        boundary.record_event(
+            "trusted_path.resolve", args, ToolDecision.BLOCKED, str(err)
+        )
+        return {"error": str(err)}
+    boundary.record_event(
+        "trusted_path.resolve", args, ToolDecision.ALLOWED,
+        f"{request.state.value} by {approver} via trusted path "
+        f"from {source_ip}.",
+    )
+    artifacts_mod.update_artifact(
+        approval_id, request, boundary.audit_log_path,
+        f"{request.state.value} by {request.approver} via trusted path: "
+        f"{request.reason}",
+    )
+    return {"approval_id": approval_id, "state": request.state.value}
+
+
+def main() -> None:
+    """Start the server: record the mode, wire the surface, then serve stdio.
+
+    Fail-deny is enforced HERE, at the door: in trusted mode a missing
+    enrollment or no non-loopback address is a refusal to start, never a
+    silent downgrade to relayed approvals.
+    """
+    global _approval_surface, _enrollment_record
+    mode = _approval_mode()
+    boundary.require_trusted_channel = mode == "trusted"
+    boundary.record_event(
+        "server.startup",
+        {"approval_mode": mode, "version": netagent.__version__},
+        ToolDecision.ALLOWED,
+        f"netagent {netagent.__version__} starting; approval mode: {mode}.",
+    )
+    if mode == "tool":
+        print(
+            "netagent: NETAGENT_APPROVAL_MODE=tool -- approvals are relayed "
+            "strings, UNATTESTED. For testing purposes only; never operate "
+            "this mode against a device you care about.",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            _enrollment_record = trusted_path_mod.load_enrollment(
+                _secret_file_path()
+            )
+            bind = trusted_path_mod.select_bind_address()
+        except trusted_path_mod.TrustedPathError as err:
+            print(f"netagent: refusing to start: {err}", file=sys.stderr)
+            raise SystemExit(2)
+        port = int(os.environ.get("NETAGENT_APPROVAL_PORT", "8484"))
+        _approval_surface = trusted_path_mod.ApprovalSurface(
+            bind_address=bind,
+            get_request=_approvals.get,
+            resolve=_trusted_resolve,
+            port=port,
+        )
+        _approval_surface.start()
+        print(
+            f"netagent: approval surface at {_approval_surface.base_url} -- "
+            "open approval URLs on a device that is NOT this machine.",
+            file=sys.stderr,
+        )
+    # stdio transport is the default -- Claude Code launches this over stdio
+    # via the .mcp.json entry. The MCP side opens no network listener; the
+    # approval surface above is the only port, and it is not the agent's.
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

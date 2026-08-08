@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hardrails"
-version = "0.1.0.dev0"
+version = "0.2.0.dev0"
 description = "Hardrails reference implementation: a bounded network agent. Deterministic boundaries around a non-deterministic agent."
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,6 +30,11 @@ lab = [
     "httpx>=0.27",
     "pynetbox>=7",
 ]
+
+[project.scripts]
+# Run by the HUMAN, once, in their own terminal: prints the trusted-path
+# approval secret a single time and stores only its hash.
+netagent-enroll = "netagent.enroll:main"
 
 [project.urls]
 Homepage = "https://github.com/GTalksTech/hardrails"

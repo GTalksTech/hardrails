@@ -48,14 +48,20 @@ itself.
 - **Read-only by default.** The read path has no config-mode method at all.
 - **Dry-run before any change.** A remediation is a `RemediationProposal` (CLI +
   diff), never "run this."
-- **Human-in-the-loop.** Applying a proposal requires an `ApprovalRequest` that a
-  named human approved, with an explicit reason. Every approval also writes a
+- **Human-in-the-loop, on a trusted path.** Applying a proposal requires an
+  `ApprovalRequest` that a named human approved, with an explicit reason --
+  and the approval enters through a channel the agent cannot write: an
+  approval page served on a non-loopback address, opened from a second
+  device, verified against an enrolled secret stored hash-only (see
+  "Approving changes" below). Submissions from the server's own machine are
+  refused regardless of credentials. Every approval also writes a
   reviewable artifact -- `approvals/<approval-id>.md` (next to the audit log;
   override with `NETAGENT_APPROVALS_DIR`) holding the exact commands, the
-  dry-run diff, the state, and a history of every transition -- so the diff the
-  human reviewed exists as a file, not just chat scrollback. Blocked applies
-  state the required flow in the block reason itself, so an agent that tries to
-  shortcut the procedure is corrected by the server, on any harness.
+  dry-run diff, the state, the channel it was resolved through, and a
+  history of every transition -- so the diff the human reviewed exists as a
+  file, not just chat scrollback. Blocked applies state the required flow in
+  the block reason itself, so an agent that tries to shortcut the procedure
+  is corrected by the server, on any harness.
 - **One device per approval.** A change is never bundled across devices.
 - **Append-only audit log.** Every tool call -- allowed or blocked -- is recorded
   in memory AND appended to a JSONL receipt on disk (`audit-log.jsonl` next to
@@ -149,12 +155,60 @@ Restart Claude Code. The `netagent` tools appear. Ask it to run a posture audit,
 then to propose and (after you approve) apply a fix. Watch the apply tool get
 **blocked** until an approval exists -- that's the boundary doing its job.
 
+## Approving changes: the trusted path
+
+The approver/reason strings on `resolve_approval` are supplied by whoever
+calls the tool -- in practice, the model. So by default the server does not
+accept them for approval at all. Instead:
+
+1. **Enroll once**, from your own terminal (never ask the agent to do this):
+
+   ```bash
+   netagent-enroll
+   ```
+
+   This prints your approval secret **once**. Store it on the device you
+   will approve from -- a phone's password manager is ideal -- and never
+   type it on the machine the agent runs on. On disk it exists only as an
+   scrypt hash (`approval-secret.json`, gitignored). Re-running rotates it.
+
+2. **Approve from a second device.** `request_approval` returns an
+   `approval_url` (the surface binds a non-loopback address; port via
+   `NETAGENT_APPROVAL_PORT`, default 8484). Open it on your phone, review
+   the exact commands and dry-run diff, enter your name, reason, and the
+   secret, and decide there.
+
+Two deterministic checks guard every submission, in order: connections
+from any address the server's own machine holds are refused (a same-box
+`curl` dies here no matter what it knows), then the secret is verified
+against the enrolled hash. `resolve_approval` can still **reject** -- a
+relayed "no" fails safe -- but it cannot approve. Refused attempts land in
+the audit log like everything else.
+
+Fail-deny: in trusted mode the server refuses to start without an
+enrollment and a non-loopback address, and if the surface goes down,
+approvals are impossible until it returns. There is no runtime fallback.
+
+### Testing-only relayed mode
+
+> **For testing purposes only -- never operate this mode against a device
+> you care about.** `NETAGENT_APPROVAL_MODE=tool` restores the legacy
+> behavior where the model relays your decision through
+> `resolve_approval`. It exists so you can try the flow before enrolling
+> (and so CI can exercise the legacy path). It is **not conformant** with
+> spec principle 3: every approval it produces is stamped
+> `tool (unattested)` on the artifact and in the audit log, and the server
+> says so at startup. The harness's own permission prompt is your only
+> identity gate in this mode.
+
 ## Tools exposed
 
 Read (run autonomously): `list_devices`, `run_show`, `audit_security_posture`,
-`propose_remediation`, `request_approval`, `resolve_approval`, `get_audit_log`.
+`propose_remediation`, `request_approval`, `get_audit_log`, and
+`resolve_approval` (reject-only in trusted mode; the approval page is the
+approve path).
 
-Gated (requires approval): `apply_remediation`.
+Gated (requires approval via the trusted path): `apply_remediation`.
 
 ## What's real vs. stubbed
 

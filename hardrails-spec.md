@@ -8,9 +8,9 @@ network without giving it the ability to take one down.
 
 | | |
 |---|---|
-| **Version** | 1.0.1 |
+| **Version** | 2.0.0 |
 | **Status** | Final. |
-| **Date** | 2026-07-11 |
+| **Date** | 2026-08-06 |
 | **Author** | Garrett Masters, G Talks Tech |
 | **License** | CC BY 4.0 for this document; Apache-2.0 for the reference implementation |
 | **Reference implementation** | `netagent` (github.com/GTalksTech/hardrails) |
@@ -188,9 +188,12 @@ this method defines it.
    returns the diff for review.
 3. **Human approval gate.** Execution MUST halt on a proposal and resume
    only on an explicit, recorded yes. Propose, never push. There MUST be no
-   code path that applies a change without a resolved approval. This gate
-   is the emotional core of the method: it is what "never lets it touch
-   prod" actually means.
+   code path that applies a change without a resolved approval. The
+   approval decision MUST enter through a trusted path: a channel the
+   agent cannot write, verified by the boundary, so that the recorded yes
+   is attested rather than relayed -- a relayed approval is a claim, not
+   an approval. This gate is the emotional core of the method: it is what
+   "never lets it touch prod" actually means.
 4. **Audit log of every action.** Every tool call, allowed or blocked, MUST
    get an append-only record: what, when, verdict, why. When something goes
    wrong, you can see whether the boundary failed or held.
@@ -215,6 +218,7 @@ are true:
 - [ ] Read tools cannot be coerced into writes (command-level enforcement).
 - [ ] No change reaches a device without a dry-run diff and a recorded
       human approval.
+- [ ] The approval channel is not writable by the agent (trusted path).
 - [ ] Every tool call is in an append-only audit log, including blocked
       calls.
 - [ ] The agent's credentials and reach are scoped to the task, not the
@@ -259,7 +263,10 @@ method is designed to be entered in stages, each one useful on its own.
   should live here for a while.
 - **Stage 2: propose and gate.** Add exactly one write path: dry-run diff
   plus the human approval gate. The agent now closes the loop from finding
-  to fix, and you still approve every change.
+  to fix, and you still approve every change. The harness's own permission
+  prompt is a legitimate interim gate while standing up the trusted path;
+  a deployment in that state is working toward conformance with principle
+  3, not in it.
 - **Stage 3: audited operations.** Add the audit log, schema validation on
   every call, and an intent source of truth (NetBox in the reference
   implementation) so Evaluation has something objective to check against.
@@ -291,6 +298,14 @@ Honesty is a design requirement here, not a disclaimer.
   or manipulated agent with read tools can still exfiltrate what it can
   see, which is why least privilege applies to reads too, and why the audit
   log covers everything, not just writes.
+- **It does not protect itself from an attacker who can rewrite it.** The
+  boundary is software; no software control survives its own code or
+  memory being tampered with. That integrity is defended by the
+  engineering layer around the code -- version control, mandatory review,
+  branch protection, CI -- and by the outer gates of principle 7, not by
+  the running gate itself. Every boundary has a trusted computing base;
+  the method's obligation is to name it, keep it small, and leave
+  evidence when it is touched.
 - **It is not a platform.** There is nothing to buy. The reference
   implementation is a teaching artifact you can read in an afternoon and
   rebuild in a weekend, on a home lab, with open tools.
@@ -385,6 +400,17 @@ principles bump the major version.
 
 ## Changelog
 
+- **2.0.0 (2026-08-06).** Breaking normative change to principle 3: the
+  approval decision MUST enter through a trusted path -- a channel the
+  agent cannot write, verified by the boundary. Added the matching
+  conformance item ("the approval channel is not writable by the agent"),
+  a stage-2 note in the adoption path (a harness-gated deployment is
+  working toward conformance, not in it), and an honesty item in section
+  8 (the boundary does not protect itself from an attacker who can
+  rewrite the boundary). Motivated by the reference implementation's
+  approval-identity gap (issue #9): approver/reason strings relayed
+  through a tool are a claim, not an attestation. Design record:
+  docs/specs/2026-08-05-trusted-path-approval.md.
 - **1.0.1 (2026-07-11).** Editorial, no normative changes. Defined
   "guardrail" as used by the tagline (section 2) and distinguished
   text-layer guardrail products (input/output validation, e.g. NVIDIA NeMo

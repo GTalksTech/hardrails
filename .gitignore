@@ -22,6 +22,9 @@ venv/
 # not in the repo)
 audit-log.jsonl
 approvals/
+# Trusted-path enrollment: holds only an scrypt hash + salt, but it is
+# operator-local credential material all the same. Never committed.
+approval-secret.json
 
 # Machine-local Claude context (see CLAUDE.md)
 CLAUDE.local.md

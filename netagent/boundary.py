@@ -48,6 +48,7 @@ from typing import Callable
 from pydantic import BaseModel, ValidationError
 
 from netagent.models import (
+    ApprovalChannel,
     ApprovalRequest,
     ApprovalState,
     ToolCallRecord,
@@ -126,6 +127,12 @@ class Boundary:
     _tools: dict[str, ToolSpec] = field(default_factory=dict)
     _log: list[ToolCallRecord] = field(default_factory=list)
     audit_log_path: Path = field(default_factory=_resolve_audit_log_path)
+    # Trusted-path provenance (issue #9): when True -- the default, because
+    # the boundary earns ALLOW, it doesn't inherit it -- a mutation's approval
+    # must have entered via the approval surface (ApprovalChannel.TRUSTED_PATH),
+    # not been relayed through the resolve_approval tool. The server flips
+    # this to False only in the testing-only tool mode, loudly.
+    require_trusted_channel: bool = True
 
     # -- registration --------------------------------------------------------
 
@@ -197,9 +204,10 @@ class Boundary:
     # unchanged; only the message got richer.
     _REQUIRED_FLOW = (
         "Required flow: propose_remediation -> request_approval (creates an "
-        "approval ID and an on-disk artifact) -> present the dry-run diff and "
-        "approval ID to the human -> resolve_approval with the human's explicit "
-        "decision and reason -> apply_remediation with that approval_id."
+        "approval ID, an on-disk artifact, and an approval_url) -> present the "
+        "dry-run diff and the approval_url to the human -> the human decides "
+        "on the approval page from a second device (testing-only tool mode: "
+        "resolve_approval) -> apply_remediation with that approval_id."
     )
 
     def _check_mutation(
@@ -225,6 +233,24 @@ class Boundary:
                 f"{self._REQUIRED_FLOW}",
             )
 
+        # Provenance (issue #9): an APPROVED state is not enough -- in trusted
+        # mode the decision must have ENTERED through the approval surface.
+        # An approval relayed through the resolve_approval tool carries
+        # channel=TOOL and is refused here even though its state machine is
+        # formally satisfied: the state says "approved", the channel says who
+        # could have produced it.
+        if (
+            self.require_trusted_channel
+            and approval.channel is not ApprovalChannel.TRUSTED_PATH
+        ):
+            return self._record(
+                spec.name, arguments, ToolDecision.BLOCKED,
+                "Approval was resolved through the tool channel (relayed "
+                "strings), but this server requires trusted-path provenance: "
+                "the human decides on the approval page, from a device that "
+                f"is not this machine. {self._REQUIRED_FLOW}",
+            )
+
         # One device per approval -- NEVER bundle a change across devices. The
         # RemediationProposal is single-device by construction, and we re-assert
         # it here so a hand-built approval can't smuggle in a multi-device blast.
@@ -243,10 +269,16 @@ class Boundary:
                 f"substitution. {self._REQUIRED_FLOW}",
             )
 
+        channel_note = (
+            "via trusted path"
+            if approval.channel is ApprovalChannel.TRUSTED_PATH
+            else "via tool channel (unattested)"
+        )
         return self._record(
             spec.name, arguments, ToolDecision.ALLOWED,
             f"Approved by {approval.approver or 'unknown'} for {target} "
-            f"(finding {approval.proposal.finding_id}). Single-device change permitted.",
+            f"{channel_note} (finding {approval.proposal.finding_id}). "
+            f"Single-device change permitted.",
         )
 
     # -- execution wrapper ---------------------------------------------------
@@ -295,6 +327,23 @@ class Boundary:
         return result
 
     # -- audit trail ---------------------------------------------------------
+
+    def record_event(
+        self,
+        tool_name: str,
+        arguments: dict,
+        decision: ToolDecision,
+        reason: str,
+    ) -> ToolDecision:
+        """Append a record for a non-tool event on the same append-only log.
+
+        The approval surface uses this so trusted-path resolutions -- and
+        REFUSED attempts (local-source hits, bad secrets) -- land in the same
+        receipt as every tool call. The invariant is 'every guarded call gets
+        a record'; events on the surface are guarded calls in every sense
+        that matters.
+        """
+        return self._record(tool_name, arguments, decision, reason)
 
     def audit_log(self) -> list[ToolCallRecord]:
         """Return a copy of the append-only log (newest last).
