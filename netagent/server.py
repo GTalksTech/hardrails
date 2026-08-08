@@ -27,6 +27,7 @@ deployment would persist these, but the boundary logic would not change.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -65,7 +66,6 @@ _cve_source = ChainedCVESource()
 _findings: dict[str, Finding] = {}
 _proposals: dict[str, RemediationProposal] = {}
 _approvals: dict[str, ApprovalRequest] = {}
-_approval_counter = 0
 
 # The live approval surface (mode `trusted` only; started in main()). Kept as
 # module state so request_approval can hand out per-approval URLs.
@@ -291,9 +291,12 @@ def request_approval(finding_id: str, device: str) -> Any:
                 "error": f"No proposal for '{proposal_id}'. Call "
                 "propose_remediation first."
             }
-        global _approval_counter
-        _approval_counter += 1
-        approval_id = f"appr-{_approval_counter}"
+        # Random, not sequential (issue #3): a counter resets on restart and
+        # re-mints appr-1, letting a new session overwrite the previous
+        # session's on-disk receipt. Eight hex chars keep collisions
+        # negligible at lab scale; the artifact sink independently refuses
+        # to touch another session's file either way.
+        approval_id = f"appr-{secrets.token_hex(4)}"
         request = approval_mod.create_approval_request(proposal)
         _approvals[approval_id] = request
         artifact = artifacts_mod.update_artifact(
