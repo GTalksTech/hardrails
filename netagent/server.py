@@ -27,6 +27,7 @@ deployment would persist these, but the boundary logic would not change.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -456,10 +457,62 @@ def apply_remediation(approval_id: str, device: str) -> Any:
 # TRUSTED PATH -- the approval surface's bridge into session state.
 # ============================================================================
 
-# Enrollment record loaded once at startup (trusted mode). Module state so
-# the surface's resolve callback can verify without re-reading the file on
-# every submission.
+# Enrollment record loaded once at startup (trusted mode, secret identity).
+# Module state so the surface's resolve callback can verify without
+# re-reading the file on every submission.
 _enrollment_record: dict | None = None
+
+# The identity seam (design doc §5): who stands behind a submission. Built
+# in main() from NETAGENT_APPROVAL_IDENTITY; when unset (tests, legacy
+# wiring), _current_identity() falls back to secret identity over the
+# loaded enrollment.
+_identity: object | None = None
+_IDENTITY_ENV = "NETAGENT_APPROVAL_IDENTITY"
+_TAILNET_APPROVERS_ENV = "NETAGENT_TAILNET_APPROVERS"
+
+
+def _current_identity():
+    if _identity is not None:
+        return _identity
+    if _enrollment_record is not None:
+        return trusted_path_mod.SecretIdentity(enrollment=_enrollment_record)
+    return None
+
+
+def _build_identity() -> object:
+    """Construct the identity seam from the environment. Fail-deny on gaps.
+
+    'secret' (default): requires an enrollment (netagent-enroll).
+    'tailscale': requires a non-empty NETAGENT_TAILNET_APPROVERS allowlist;
+    whois does the attesting, so no enrollment is needed or loaded.
+    """
+    global _enrollment_record
+    identity_mode = (
+        os.environ.get(_IDENTITY_ENV, "secret").strip().lower() or "secret"
+    )
+    if identity_mode == "tailscale":
+        approvers = frozenset(
+            name.strip()
+            for name in os.environ.get(_TAILNET_APPROVERS_ENV, "").split(",")
+            if name.strip()
+        )
+        if not approvers:
+            raise trusted_path_mod.TrustedPathError(
+                "NETAGENT_APPROVAL_IDENTITY=tailscale requires a non-empty "
+                "NETAGENT_TAILNET_APPROVERS allowlist (comma-separated "
+                "tailnet logins or device names). An empty allowlist means "
+                "nobody can approve, so the server refuses to start "
+                "(fail-deny)."
+            )
+        if shutil.which("tailscale") is None:
+            raise trusted_path_mod.TrustedPathError(
+                "NETAGENT_APPROVAL_IDENTITY=tailscale, but no `tailscale` "
+                "CLI is on PATH -- whois attestation is impossible, so the "
+                "server refuses to start (fail-deny)."
+            )
+        return trusted_path_mod.TailscaleIdentity(approvers=approvers)
+    _enrollment_record = trusted_path_mod.load_enrollment(_secret_file_path())
+    return trusted_path_mod.SecretIdentity(enrollment=_enrollment_record)
 
 
 def _secret_file_path() -> Path:
@@ -499,12 +552,13 @@ def _trusted_resolve(
             f"Unknown approval '{approval_id}'.",
         )
         return {"error": f"Unknown approval '{approval_id}'."}
-    if _enrollment_record is None:
+    identity = _current_identity()
+    if identity is None:
         boundary.record_event(
             "trusted_path.resolve", args, ToolDecision.BLOCKED,
-            "No enrollment loaded; approvals are impossible (fail-deny).",
+            "No identity configured; approvals are impossible (fail-deny).",
         )
-        return {"error": "No enrollment loaded; approvals are impossible."}
+        return {"error": "No identity configured; approvals are impossible."}
     try:
         trusted_path_mod.resolve_trusted(
             request,
@@ -512,7 +566,7 @@ def _trusted_resolve(
             approver=approver,
             reason=reason,
             submitted_secret=submitted_secret,
-            enrollment=_enrollment_record,
+            identity=identity,
             source_ip=source_ip,
         )
     except (trusted_path_mod.TrustedPathError, approval_mod.ApprovalError) as err:
@@ -522,7 +576,9 @@ def _trusted_resolve(
         return {"error": str(err)}
     boundary.record_event(
         "trusted_path.resolve", args, ToolDecision.ALLOWED,
-        f"{request.state.value} by {approver} via trusted path "
+        # request.approver is what the identity seam attested -- in tailnet
+        # mode that is the whois login, not the name typed on the page.
+        f"{request.state.value} by {request.approver} via trusted path "
         f"from {source_ip}.",
     )
     artifacts_mod.update_artifact(
@@ -530,7 +586,11 @@ def _trusted_resolve(
         f"{request.state.value} by {request.approver} via trusted path: "
         f"{request.reason}",
     )
-    return {"approval_id": approval_id, "state": request.state.value}
+    return {
+        "approval_id": approval_id,
+        "state": request.state.value,
+        "approver": request.approver,
+    }
 
 
 def main() -> None:
@@ -540,14 +600,22 @@ def main() -> None:
     enrollment or no non-loopback address is a refusal to start, never a
     silent downgrade to relayed approvals.
     """
-    global _approval_surface, _enrollment_record
+    global _approval_surface, _identity
     mode = _approval_mode()
+    identity_mode = (
+        os.environ.get(_IDENTITY_ENV, "secret").strip().lower() or "secret"
+    )
     boundary.require_trusted_channel = mode == "trusted"
     boundary.record_event(
         "server.startup",
-        {"approval_mode": mode, "version": netagent.__version__},
+        {
+            "approval_mode": mode,
+            "approval_identity": identity_mode,
+            "version": netagent.__version__,
+        },
         ToolDecision.ALLOWED,
-        f"netagent {netagent.__version__} starting; approval mode: {mode}.",
+        f"netagent {netagent.__version__} starting; approval mode: {mode}; "
+        f"identity: {identity_mode}.",
     )
     if mode == "tool":
         print(
@@ -558,12 +626,16 @@ def main() -> None:
         )
     else:
         try:
-            _enrollment_record = trusted_path_mod.load_enrollment(
-                _secret_file_path()
-            )
-            bind = trusted_path_mod.resolve_bind(
-                os.environ.get("NETAGENT_APPROVAL_BIND")
-            )
+            _identity = _build_identity()
+            bind = os.environ.get("NETAGENT_APPROVAL_BIND")
+            if bind:
+                bind = trusted_path_mod.resolve_bind(bind)
+            else:
+                # Tailnet identity: the approving peer arrives over the
+                # tailnet, so the surface prefers the Tailscale address.
+                bind = trusted_path_mod.select_bind_address(
+                    prefer_cgnat=identity_mode == "tailscale"
+                )
         except trusted_path_mod.TrustedPathError as err:
             print(f"netagent: refusing to start: {err}", file=sys.stderr)
             raise SystemExit(2)

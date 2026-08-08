@@ -86,7 +86,7 @@ def _resolve(request, *, secret, enrollment, source, decision="approve"):
         approver="Garrett",
         reason="Reviewed the diff on the approval page.",
         submitted_secret=secret,
-        enrollment=enrollment,
+        identity=trusted_path.SecretIdentity(enrollment=enrollment),
         source_ip=source,
         local_addrs=_LOCAL_ADDRS,
     )
