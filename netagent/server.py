@@ -636,6 +636,10 @@ def main() -> None:
                 bind = trusted_path_mod.select_bind_address(
                     prefer_cgnat=identity_mode == "tailscale"
                 )
+            tls_context = trusted_path_mod.tls_from_env(
+                os.environ.get("NETAGENT_APPROVAL_TLS_CERT"),
+                os.environ.get("NETAGENT_APPROVAL_TLS_KEY"),
+            )
         except trusted_path_mod.TrustedPathError as err:
             print(f"netagent: refusing to start: {err}", file=sys.stderr)
             raise SystemExit(2)
@@ -645,6 +649,8 @@ def main() -> None:
             get_request=_approvals.get,
             resolve=_trusted_resolve,
             port=port,
+            tls_context=tls_context,
+            display_host=os.environ.get("NETAGENT_APPROVAL_HOSTNAME"),
         )
         _approval_surface.start()
         print(

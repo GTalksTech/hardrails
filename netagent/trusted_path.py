@@ -51,6 +51,7 @@ import json
 import re
 import secrets as _secrets
 import socket
+import ssl
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -170,6 +171,42 @@ def resolve_bind(
             )
         return addr
     return select_bind_address(candidates)
+
+
+def tls_from_env(cert_path: str | None, key_path: str | None) -> ssl.SSLContext | None:
+    """Build the surface's TLS context from operator configuration.
+
+    Both-or-neither: a certificate without its key (or vice versa) is a
+    misconfiguration, and a pair that will not load is a misconfiguration.
+    Either refuses (fail-deny) rather than starting a surface that is not
+    what the operator believes it is. Returning None -- both unset -- means
+    plain HTTP, mode A's documented wire limitation.
+
+    What TLS is here, stated honestly: the private key lives on the agent's
+    machine and is readable by the threat model's same-user attacker. It
+    defends the WIRE (the LAN-sniffing gap) and satisfies the browser
+    secure-context requirement WebAuthn needs (issue #11); the gate remains
+    the local-source check and the identity seam, which never depended on
+    transport secrecy.
+    """
+    if cert_path is None and key_path is None:
+        return None
+    if cert_path is None or key_path is None:
+        raise TrustedPathError(
+            "TLS misconfiguration: NETAGENT_APPROVAL_TLS_CERT and "
+            "NETAGENT_APPROVAL_TLS_KEY must BOTH be set (or neither). "
+            "Refusing to start rather than serving something other than "
+            "what was configured."
+        )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    except (OSError, ssl.SSLError) as exc:
+        raise TrustedPathError(
+            f"TLS material at cert={cert_path!r} key={key_path!r} did not "
+            f"load ({exc}). Refusing to start (fail-deny)."
+        ) from exc
+    return context
 
 
 # -- enrollment: hash on disk, plaintext only on the second device -----------
@@ -459,17 +496,26 @@ class ApprovalSurface:
         get_request: Callable[[str], ApprovalRequest | None],
         resolve: Callable[..., dict],
         port: int = 8484,
+        tls_context: ssl.SSLContext | None = None,
+        display_host: str | None = None,
     ) -> None:
         self._bind = bind_address
         self._get_request = get_request
         self._resolve = resolve
         self._port = port
+        self._tls_context = tls_context
+        # display_host is what goes in the URLs the human taps -- a DNS name
+        # matching the certificate (e.g. a ts.net MagicDNS name). Binding is
+        # still by address; this is presentation, not policy.
+        self._display_host = display_host
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     @property
     def base_url(self) -> str:
-        return f"http://{self._bind}:{self._port}"
+        scheme = "https" if self._tls_context is not None else "http"
+        host = self._display_host or self._bind
+        return f"{scheme}://{host}:{self._port}"
 
     def url_for(self, approval_id: str) -> str:
         return f"{self.base_url}/a/{approval_id}"
@@ -490,6 +536,10 @@ class ApprovalSurface:
                 surface._handle_post(self)
 
         self._httpd = ThreadingHTTPServer((self._bind, self._port), _Handler)
+        if self._tls_context is not None:
+            self._httpd.socket = self._tls_context.wrap_socket(
+                self._httpd.socket, server_side=True
+            )
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, daemon=True, name="approval-surface"
         )

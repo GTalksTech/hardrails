@@ -191,6 +191,28 @@ Fail-deny: in trusted mode the server refuses to start without an
 enrollment and a non-loopback address, and if the surface goes down,
 approvals are impossible until it returns. There is no runtime fallback.
 
+### TLS on the approval page (optional upgrade)
+
+By default the page is plain HTTP on your LAN -- fine for a lab, but the
+secret crosses the wire in the clear (the design doc says so honestly).
+Give the surface a certificate and it serves HTTPS:
+
+```bash
+NETAGENT_APPROVAL_TLS_CERT=/path/to/cert.pem
+NETAGENT_APPROVAL_TLS_KEY=/path/to/key.pem
+NETAGENT_APPROVAL_HOSTNAME=your-machine.your-tailnet.ts.net
+```
+
+The easiest real certificate a home lab can get:
+`tailscale cert your-machine.your-tailnet.ts.net` issues a genuine
+Let's Encrypt cert for your machine's MagicDNS name -- no CA to run, and
+the name resolves on every tailnet device. `NETAGENT_APPROVAL_HOSTNAME`
+puts that DNS name in the `approval_url` so the link matches the cert.
+Both env vars must be set together, and material that will not load
+refuses to start -- there is no silent fallback to plain HTTP. This is
+also the groundwork for WebAuthn approvals (issue #11), which browsers
+only allow over HTTPS under a DNS name.
+
 ### Tailnet identity (optional upgrade)
 
 If you run [Tailscale](https://tailscale.com/), the tailnet can *attest*
