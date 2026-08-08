@@ -136,12 +136,16 @@ class TestResultRecords:
         # The decision line itself was written pre-execution and stays that way.
         assert calls[0]["result_summary"] == ""
 
-    def test_execution_error_summary_is_persisted(self, tmp_path):
+    def test_execution_error_summary_is_shape_only(self, tmp_path):
+        # Issue #20: the error summary is shape-only, like _summarize. A device
+        # I/O exception can carry payload (a netmiko read-timeout embeds the
+        # buffer read so far, whose first line can be a secret), so the message
+        # is withheld and only the exception TYPE is recorded.
         path = tmp_path / "audit-log.jsonl"
         boundary = _fresh_boundary(path)
 
         def boom() -> str:
-            raise RuntimeError("device fell over")
+            raise RuntimeError("device fell over: enable secret 9 $9$LEAKME")
 
         with pytest.raises(RuntimeError):
             boundary.guard("run_show", {"device": "core-rtr-01"}, boom)
@@ -149,7 +153,10 @@ class TestResultRecords:
         results = [r for r in _read_jsonl(path) if r.get("record_type") == "result"]
         assert len(results) == 1
         assert "ERROR during execution" in results[0]["result_summary"]
-        assert "device fell over" in results[0]["result_summary"]
+        assert "RuntimeError" in results[0]["result_summary"]  # type recorded
+        # The message -- which can carry device output/secrets -- is NOT persisted.
+        assert "LEAKME" not in results[0]["result_summary"]
+        assert "device fell over" not in results[0]["result_summary"]
 
     def test_blocked_call_gets_no_result_record(self, tmp_path):
         path = tmp_path / "audit-log.jsonl"

@@ -41,6 +41,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -133,6 +134,15 @@ class Boundary:
     # not been relayed through the resolve_approval tool. The server flips
     # this to False only in the testing-only tool mode, loudly.
     require_trusted_channel: bool = True
+    # Serializes the _log append and the JSONL write. The process is concurrent
+    # -- FastMCP runs sync tools in a threadpool AND the approval surface is a
+    # ThreadingHTTPServer that records on this same instance -- so without this
+    # two callers could interleave a torn JSONL line. Re-entrant so _record can
+    # hold it across append + _persist. Held ONLY around the audit write, never
+    # around execute(), so device I/O is not serialized behind it (issue #20).
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, compare=False, repr=False
+    )
 
     # -- registration --------------------------------------------------------
 
@@ -155,9 +165,25 @@ class Boundary:
     ) -> ToolDecision:
         """Decide ALLOW vs BLOCK for one call, and append an audit record.
 
-        This is pure policy -- it never touches a device. It returns the verdict
-        and records it; the human-readable reason lives on the appended
-        ToolCallRecord (see `last_record` / `audit_log`).
+        Public verdict API: returns just the decision, so existing callers are
+        unchanged. guard() uses _evaluate, which returns the appended record
+        itself -- reaching for self._log[-1] was a race under concurrent
+        callers (issue #20).
+        """
+        return self._evaluate(tool_name, arguments, approval).decision
+
+    def _evaluate(
+        self,
+        tool_name: str,
+        arguments: dict,
+        approval: ApprovalRequest | None = None,
+    ) -> ToolCallRecord:
+        """Decide ALLOW vs BLOCK, append the record, and RETURN that record.
+
+        Pure policy -- it never touches a device. The returned record carries
+        the verdict (`.decision`) and the reason; guard() uses this exact object
+        rather than re-reading self._log[-1] (a race under concurrent callers,
+        issue #20).
 
         Order of checks is deliberate (cheapest + most fundamental first):
           1. Is the tool even registered?      (default deny)
@@ -215,7 +241,7 @@ class Boundary:
         spec: ToolSpec,
         arguments: dict,
         approval: ApprovalRequest | None,
-    ) -> ToolDecision:
+    ) -> ToolCallRecord:
         """Gate a MUTATE tool. Every failure path is an explicit BLOCK."""
         if approval is None:
             return self._record(
@@ -315,16 +341,36 @@ class Boundary:
         was persisted before execution (append-only -- it is never rewritten),
         so the summary is APPENDED as a second record linked by call_id.
         """
-        decision = self.check(tool_name, arguments, approval)
-        record = self._log[-1]  # check() always appends exactly one record.
+        record = self._evaluate(tool_name, arguments, approval)
 
-        if decision is ToolDecision.BLOCKED:
+        if record.decision is ToolDecision.BLOCKED:
             raise BoundaryViolation(record)
+
+        # Fail-closed audit for mutations (issue #20): a device change with no
+        # durable receipt is exactly what the audit log exists to prevent. Reads
+        # and blocks stay best-effort (a read that isn't logged changed nothing),
+        # but an ALLOWED mutation whose decision line did not reach disk is
+        # refused before it can run.
+        spec = self._tools.get(tool_name)
+        if (
+            spec is not None
+            and spec.kind is ToolKind.MUTATE
+            and not record._persisted
+        ):
+            blocked = self._record(
+                tool_name, arguments, ToolDecision.BLOCKED,
+                "Audit unavailable: the durable audit record for this change "
+                "could not be written, so the change is refused (fail-closed). "
+                "A mutation with no receipt is exactly what the audit log exists "
+                "to prevent. Fix the audit-log path/permissions "
+                "(NETAGENT_AUDIT_LOG) and retry.",
+            )
+            raise BoundaryViolation(blocked)
 
         try:
             result = execute()
         except Exception as exc:  # noqa: BLE001 -- we record then re-raise.
-            record.result_summary = f"ERROR during execution: {type(exc).__name__}: {exc}"
+            record.result_summary = _summarize_exception(exc)
             self._persist(
                 ToolResultRecord(
                     call_id=record.call_id, result_summary=record.result_summary
@@ -356,7 +402,7 @@ class Boundary:
         a record'; events on the surface are guarded calls in every sense
         that matters.
         """
-        return self._record(tool_name, arguments, decision, reason)
+        return self._record(tool_name, arguments, decision, reason).decision
 
     def audit_log(self) -> list[ToolCallRecord]:
         """Return a copy of the append-only log (newest last).
@@ -377,14 +423,17 @@ class Boundary:
         arguments: dict,
         decision: ToolDecision,
         reason: str,
-    ) -> ToolDecision:
-        """Append one immutable-by-convention record and echo the decision.
+    ) -> ToolCallRecord:
+        """Append one record (in memory + durable JSONL) and RETURN it.
 
-        The record goes to BOTH sinks: the in-memory list (fast reads) and the
-        JSONL receipt on disk (durable). The disk write happens HERE, at
-        decision time -- before any execution -- so a crash mid-tool-run can
-        never lose the verdict. The execution outcome therefore cannot appear
-        on this line; `guard()` appends it afterwards as a ToolResultRecord.
+        The append and the file write happen under `_lock` so concurrent callers
+        -- tool worker threads and the approval-surface thread -- cannot
+        interleave lines. The disk write happens HERE, at decision time (before
+        any execution), so a crash mid-tool-run can never lose the verdict. The
+        record's `_persisted` flag records whether the durable write landed;
+        guard() reads it to fail a mutation closed (issue #20). The execution
+        outcome cannot appear on this line; `guard()` appends it afterwards as a
+        ToolResultRecord.
         """
         record = ToolCallRecord(
             tool_name=tool_name,
@@ -392,31 +441,39 @@ class Boundary:
             decision=decision,
             reason=reason,
         )
-        self._log.append(record)
-        self._persist(record)
-        return decision
+        with self._lock:
+            self._log.append(record)
+            record._persisted = self._persist(record)
+        return record
 
-    def _persist(self, record: ToolCallRecord | ToolResultRecord) -> None:
+    def _persist(self, record: ToolCallRecord | ToolResultRecord) -> bool:
         """Append one record to the JSONL receipt (append-only, never truncate).
 
-        A write failure must not crash the gate -- the verdict is what protects
-        the device, and the in-memory record still stands. So a disk error is
-        swallowed here rather than turned into a BLOCKED demo. Same _summarize
-        discipline as the in-memory log: no full device payloads reach the file.
+        Returns True if the line reached disk, False if the write failed. It
+        never RAISES -- a bad path must not crash the gate -- but the boolean
+        lets guard() fail a mutation closed when its receipt did not land
+        (issue #20); reads and blocks tolerate a miss. The write is serialized
+        under `_lock` so concurrent appends cannot interleave into a torn line.
+        Same _summarize discipline as the in-memory log: no full device payloads
+        reach the file.
         """
-        try:
-            self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.audit_log_path.open("a", encoding="utf-8") as fh:
-                fh.write(
-                    json.dumps(record.model_dump(mode="json"), separators=(",", ":"))
-                    + "\n"
-                )
-        except (OSError, TypeError, ValueError):
-            # Best-effort receipt: never let a bad path OR an unserializable
-            # argument value break the boundary. (pydantic's serialization
-            # error is a ValueError; json.dumps raises TypeError.) The verdict
-            # and the in-memory record still stand either way.
-            pass
+        with self._lock:
+            try:
+                self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.audit_log_path.open("a", encoding="utf-8") as fh:
+                    fh.write(
+                        json.dumps(
+                            record.model_dump(mode="json"), separators=(",", ":")
+                        )
+                        + "\n"
+                    )
+            except (OSError, TypeError, ValueError):
+                # Best-effort receipt: never let a bad path OR an unserializable
+                # argument value break the boundary. (pydantic's serialization
+                # error is a ValueError; json.dumps raises TypeError.) Report the
+                # failure so guard() can fail a mutation closed.
+                return False
+        return True
 
 
 def _summarize(result: object) -> str:
@@ -434,3 +491,18 @@ def _summarize(result: object) -> str:
     if isinstance(result, (list, tuple)):
         return f"{type(result).__name__} with {len(result)} item(s)"
     return f"{type(result).__name__}"
+
+
+def _summarize_exception(exc: BaseException) -> str:
+    """Shape-only summary of an execution error -- type recorded, message WITHHELD.
+
+    Mirrors _summarize's discipline. An exception raised from device I/O can
+    carry device output (a netmiko read-timeout embeds the buffer read so far,
+    whose first line can be `enable secret ...`), so we record the exception
+    TYPE and withhold the message: enough to prove an error of that class
+    happened, without leaking payload into the durable receipt.
+    """
+    return (
+        f"ERROR during execution: {type(exc).__name__} "
+        "(message withheld to keep device output out of the receipt)"
+    )

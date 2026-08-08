@@ -30,7 +30,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 def _utcnow() -> datetime:
@@ -214,6 +214,11 @@ class ToolCallRecord(BaseModel):
     result_summary: str = Field(
         "", description="Short outcome note. Never the full device payload."
     )
+    # Transient runtime flag, NOT serialized (PrivateAttr): did this record's
+    # durable append succeed? guard() reads it to fail a mutation closed when
+    # its receipt did not reach disk (issue #20). Defaults True so any record
+    # built outside the boundary reads as persisted.
+    _persisted: bool = PrivateAttr(default=True)
 
 
 class ToolResultRecord(BaseModel):
