@@ -32,6 +32,7 @@ and the audit log are the enforcement; this file is the human-readable receipt.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from netagent.models import (
@@ -74,6 +75,12 @@ def update_artifact(
     rather than raising, so a bad path cannot break the approval flow. The
     caller surfaces the None honestly (no path claimed that was not written).
     """
+    # The id becomes a filename, so it is validated at the sink even though
+    # callers only pass server-issued ids ('appr-3'): a separator-bearing or
+    # otherwise malformed id must never reach Path arithmetic. Same
+    # best-effort contract as a failed write -- no artifact, return None.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", approval_id):
+        return None
     _events.setdefault(approval_id, []).append((_utcnow().isoformat(), event))
     directory = resolve_approvals_dir(audit_log_path)
     path = directory / f"{approval_id}.md"

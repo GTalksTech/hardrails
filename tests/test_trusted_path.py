@@ -389,6 +389,30 @@ class TestApprovalPage:
 
 
 # ----------------------------------------------------------------------------
+# 8b. Hostile approval ids die at the door (surface parse + artifact sink).
+# ----------------------------------------------------------------------------
+
+
+class TestHostileApprovalIds:
+    @pytest.mark.parametrize(
+        "raw", ["..\\evil", "../evil", "a/b", "appr\\1", "", "appr 1"]
+    )
+    def test_surface_rejects_separator_or_blank_ids(self, raw):
+        assert trusted_path.ApprovalSurface._approval_id(f"/a/{raw}") is None
+
+    def test_surface_accepts_wellformed_ids(self):
+        assert trusted_path.ApprovalSurface._approval_id("/a/appr-12") == "appr-12"
+
+    def test_artifact_sink_refuses_traversal_ids(self, tmp_path):
+        request = _tool_approved()
+        result = artifacts_mod.update_artifact(
+            "..\\escape", request, tmp_path / "audit.jsonl", "hostile id"
+        )
+        assert result is None
+        assert not (tmp_path / "escape.md").exists()
+
+
+# ----------------------------------------------------------------------------
 # 9. Full-stack over the wire: real socket -> surface -> resolver -> boundary.
 # ----------------------------------------------------------------------------
 

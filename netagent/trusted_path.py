@@ -46,6 +46,7 @@ import hashlib
 import hmac
 import html
 import json
+import re
 import secrets as _secrets
 import socket
 import threading
@@ -341,10 +342,17 @@ class ApprovalSurface:
 
     # -- request handling ----------------------------------------------------
 
-    @staticmethod
-    def _approval_id(path: str) -> str | None:
+    # Server-issued ids look like 'appr-3'. Anything outside this shape --
+    # separators, blanks, leading dots -- is hostile-or-broken and dies at
+    # the door, BEFORE it can reach a dict lookup or a filesystem path.
+    _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+    @classmethod
+    def _approval_id(cls, path: str) -> str | None:
         parts = urlparse(path).path.strip("/").split("/")
-        return parts[1] if len(parts) == 2 and parts[0] == "a" else None
+        if len(parts) != 2 or parts[0] != "a":
+            return None
+        return parts[1] if cls._SAFE_ID.fullmatch(parts[1]) else None
 
     def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         approval_id = self._approval_id(handler.path)
