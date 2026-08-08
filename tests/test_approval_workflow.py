@@ -76,7 +76,14 @@ def _seed_http_finding() -> str:
 
 @pytest.fixture()
 def wired(monkeypatch, tmp_path):
-    """Fake the device + apply paths, sandbox the audit log and approvals dir."""
+    """Fake the device + apply paths, sandbox the audit log and approvals dir.
+
+    These tests exercise the LEGACY tool-channel resolution, so the fixture
+    opts into the testing-only tool mode explicitly (env + boundary flag) --
+    the migration prescribed by the trusted-path spec
+    (docs/specs/2026-08-05-trusted-path-approval.md, section 9). Trusted-mode
+    behavior is pinned in tests/test_trusted_path.py.
+    """
     monkeypatch.setattr(server, "DeviceConnection", lambda dev: _FakeConn(dev))
     monkeypatch.setattr(
         server.remediation_mod,
@@ -85,6 +92,8 @@ def wired(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(server.boundary, "audit_log_path", tmp_path / "audit.jsonl")
     monkeypatch.delenv("NETAGENT_APPROVALS_DIR", raising=False)
+    monkeypatch.setenv("NETAGENT_APPROVAL_MODE", "tool")
+    monkeypatch.setattr(server.boundary, "require_trusted_channel", False)
     server._findings.clear()
     server._proposals.clear()
     server._approvals.clear()

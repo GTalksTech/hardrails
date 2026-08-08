@@ -135,6 +135,21 @@ class ApprovalState(str, enum.Enum):
     REJECTED = "rejected"
 
 
+class ApprovalChannel(str, enum.Enum):
+    """HOW a decision entered the server -- the identity axis.
+
+    TOOL: resolved via the resolve_approval tool. The approver/reason strings
+        were relayed by whoever called it (in practice, the model), so the
+        server can attest process but not identity. Unattested.
+    TRUSTED_PATH: resolved via the approval surface -- a channel the agent
+        cannot write (local sources refused, enrolled secret verified).
+        See docs/specs/2026-08-05-trusted-path-approval.md.
+    """
+
+    TOOL = "tool"
+    TRUSTED_PATH = "trusted_path"
+
+
 class ApprovalRequest(BaseModel):
     """The human-in-the-loop gate. Execution suspends until this resolves."""
 
@@ -146,6 +161,13 @@ class ApprovalRequest(BaseModel):
         None, description="Who decided. Recorded for the audit trail."
     )
     reason: str | None = Field(None, description="Why approved/rejected.")
+    channel: ApprovalChannel = Field(
+        ApprovalChannel.TOOL,
+        description="How the decision entered. Only the trusted-path resolver "
+        "sets TRUSTED_PATH; the boundary requires it before any mutation "
+        "unless the server was deliberately started in the testing-only "
+        "tool mode.",
+    )
 
 
 class ToolDecision(str, enum.Enum):

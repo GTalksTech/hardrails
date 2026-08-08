@@ -48,7 +48,9 @@ checklist, and the adoption path: [hardrails-spec.md](hardrails-spec.md).
 
 ## Status
 
-- **Specification: v1.0.** Stable, versioned, in this repo.
+- **Specification: v2.0.** Stable, versioned, in this repo. v2 makes the
+  trusted path normative: the approval decision must enter through a
+  channel the agent cannot write.
 - **Reference implementation (`netagent/`): shipped, in this repo.** A
   bounded network agent built as an MCP server (FastMCP, Netmiko, Pydantic,
   NetBox as the intent source of truth), for a 3-node Cisco lab replicable

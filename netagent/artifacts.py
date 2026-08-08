@@ -34,7 +34,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from netagent.models import ApprovalRequest, _utcnow
+from netagent.models import (
+    ApprovalChannel,
+    ApprovalRequest,
+    ApprovalState,
+    _utcnow,
+)
 
 # Where artifacts live. Same env-only configuration discipline as
 # NETAGENT_AUDIT_LOG; the default keeps the receipt next to the audit log so
@@ -84,10 +89,21 @@ def _render(approval_id: str, request: ApprovalRequest) -> str:
     """Render the complete current story of one approval as markdown."""
     proposal = request.proposal
     resolved = request.resolved_at.isoformat() if request.resolved_at else "--"
+    # The channel line is the identity claim, stated at the artifact's
+    # strength: a pending request has no decision yet ('--'); a trusted-path
+    # resolution names the channel; a tool-channel resolution is marked
+    # unattested so the weaker claim is visible on the receipt itself.
+    if request.state is ApprovalState.PENDING:
+        channel = "--"
+    elif request.channel is ApprovalChannel.TRUSTED_PATH:
+        channel = request.channel.value
+    else:
+        channel = f"{request.channel.value} (unattested)"
     lines = [
         f"# Approval {approval_id}",
         "",
         f"- **State:** {request.state.value}",
+        f"- **Channel:** {channel}",
         f"- **Finding:** {proposal.finding_id}",
         f"- **Device:** {proposal.device}",
         f"- **Requested at:** {request.requested_at.isoformat()}",
