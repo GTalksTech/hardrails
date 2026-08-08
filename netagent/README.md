@@ -70,6 +70,35 @@ itself.
 - **Schema validation.** Malformed arguments are blocked before a device is touched.
 - **Least privilege.** Unknown tool or missing approval -> default deny.
 
+## Every principle maps to code you can point at
+
+The spec promises it (§11); here is the map. Each row is a file you can read and
+a test that fails if the enforcement regresses.
+
+| Boundary principle (spec §5) | Enforced in | Proven by |
+| --- | --- | --- |
+| 1 — Read-only by default, on the command | `devices._read_command_rejection`, `run_show` | `tests/test_read_path_guard.py` |
+| 2 — Dry-run before any change | `remediation.build_proposal`, `_render_dry_run_diff` | `tests/test_remediation.py` |
+| 3 — Human approval via a trusted path | `boundary._check_mutation`, `trusted_path.resolve_trusted` | `tests/test_trusted_path.py`, `tests/test_tailscale_identity.py` |
+| 4 — Append-only audit of every call | `boundary._record` / `_persist` | `tests/test_boundary_audit_log.py`, `tests/test_boundary_integrity.py` |
+| 5 — Least privilege; single-use, single-device | `devices.get_device`, `boundary._check_mutation`, `remediation.apply_approved` | `tests/test_single_use_approval.py`, `tests/test_server_propose.py` |
+| 6 — Schema validation in the tool layer | `boundary.check` (`arg_schema`) | `tests/test_conformance.py` (C7) |
+| 7 — Defense in depth (harness gate is the outer lock) | deployment posture | — (external, by design) |
+
+## Verify it yourself
+
+Don't take the table's word for it — run the checklist against the real boundary:
+
+```bash
+hardrails-conformance
+```
+
+It executes all 8 conformance items (spec §5) in-process and offline, prints
+PASS/FAIL per item, and exits non-zero if any fails — so it works in CI too, and
+is a regression guard: a change that quietly weakens an invariant turns a box
+red. See [`docs/THREAT-MODEL.md`](../docs/THREAT-MODEL.md) for what the boundary
+does and does not defend against.
+
 ## Setup
 
 ```bash

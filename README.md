@@ -1,6 +1,9 @@
 # Hardrails
 
 [![Tests](https://github.com/GTalksTech/hardrails/actions/workflows/test.yml/badge.svg)](https://github.com/GTalksTech/hardrails/actions/workflows/test.yml)
+[![Spec v2.0.0](https://img.shields.io/badge/spec-v2.0.0-2ea44f)](hardrails-spec.md)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![Code: Apache-2.0](https://img.shields.io/badge/code-Apache--2.0-blue)](LICENSE)
 
 **Guardrails ask. Hardrails enforce.**
 
@@ -61,10 +64,30 @@ checklist, and the adoption path: [hardrails-spec.md](hardrails-spec.md).
   cache, NTP hardening, NetBox intent drift) are unit-tested and validated
   against a live lab. **Running it: see [`netagent/README.md`](netagent/README.md).**
 
+**Verify it yourself.** `hardrails-conformance` runs the spec's 8-item
+conformance checklist against the real boundary — PASS/FAIL per item, offline,
+exit-non-zero on any failure. Project docs:
+[threat model](docs/THREAT-MODEL.md) · [changelog](CHANGELOG.md) ·
+[roadmap](ROADMAP.md).
+
 **[Watch the full build walkthrough](https://youtu.be/dbkwtuXuPPQ)** on
 [G Talks Tech](https://www.youtube.com/@GTalksTechOfficial). Subscribe there
 or join the mailing list at [join.gtalkstech.com](https://join.gtalkstech.com)
 for what lands next.
+
+## How this compares
+
+Hardrails is one point on a spectrum of serious work converging on the same
+problem. The full, fair treatment is in
+[the spec's §10](hardrails-spec.md); the short version:
+
+| | Starting point | Form |
+| --- | --- | --- |
+| **Hardrails** | Assume controls, grant capability deliberately | An open method + a weekend-rebuildable reference, sized for one engineer |
+| [NetClaw](https://github.com/automateyournetwork/netclaw) | Assume autonomy, add controls | A maximal-capability network agent |
+| [DefenseClaw](https://github.com/cisco-ai-defense/defenseclaw) | Assume autonomy, govern the runtime | Enterprise agent-runtime governance |
+| [NautobotAI](https://networktocode.com/nautobot/nautobot-ai/) | AI recommends, a platform executes | An enterprise product |
+| [P.E.N.E.](https://sifbaksh.com/) | Behavior contracts at the prompt layer | A peer prompt/workflow method |
 
 ## Licensing
 

@@ -35,8 +35,13 @@ already requires.
   normalizes IPs. Mode A unaffected. (#22, #23)
 
 ### Added
+- `hardrails-conformance`: a runnable self-test that executes the spec's 8-item
+  conformance checklist against the real boundary and prints PASS/FAIL (a
+  "verify, don't trust" artifact and a regression guard). (#26)
 - [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md): the trusted computing base and
   in/out-of-scope attackers, as the spec's honesty section obligates.
+- [`ROADMAP.md`](ROADMAP.md), a principle→code→test map in `netagent/README.md`,
+  and README badges + a peer-comparison table.
 - This changelog.
 
 ## [0.3.0.dev0] — 2026-08-08
