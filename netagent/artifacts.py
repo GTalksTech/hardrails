@@ -87,6 +87,12 @@ def update_artifact(
     if not fullpath.startswith(directory + os.sep):
         return None
     directory, path = Path(directory), Path(fullpath)
+    # Foreign-receipt guard (issue #3): a file that exists on disk for an id
+    # this process has NO transition history for is another session's
+    # receipt. Receipts are frozen history -- refuse before the id enters
+    # _events, so a refused id stays foreign on every retry.
+    if approval_id not in _events and path.exists():
+        return None
     _events.setdefault(approval_id, []).append((_utcnow().isoformat(), event))
     try:
         directory.mkdir(parents=True, exist_ok=True)
