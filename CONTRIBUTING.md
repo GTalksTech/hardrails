@@ -16,9 +16,8 @@ pip install -e ".[lab]" pytest
 pytest
 ```
 
-The full suite must pass before you start (54 tests as of this writing, all
-offline, no lab required). If it does not, that is a bug: please open an
-issue with your OS and Python version.
+The full suite must pass before you start (all offline, no lab required). If it
+does not, that is a bug: please open an issue with your OS and Python version.
 
 ## The invariants
 

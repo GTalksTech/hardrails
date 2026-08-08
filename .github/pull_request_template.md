@@ -8,7 +8,7 @@
 
 ## How verified
 
-<!-- What you ran and what you saw. "pytest, 54 passed" is a fine answer. -->
+<!-- What you ran and what you saw. "pytest, all green" is a fine answer. -->
 
 - [ ] `pytest` green locally
 - [ ] Behavior change is covered by a test (or this is docs/chore only)
