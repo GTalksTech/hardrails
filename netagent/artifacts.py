@@ -102,6 +102,32 @@ def update_artifact(
     return path
 
 
+def _longest_backtick_run(text: str) -> int:
+    """The longest run of consecutive backticks in `text` (0 if none)."""
+    longest = current = 0
+    for char in text:
+        if char == "`":
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def _fence(body: str, info: str = "") -> list[str]:
+    """Wrap `body` in a fenced code block that device text cannot break out of.
+
+    The dry-run diff is built from the running-config, which is untrusted: a
+    line containing a literal ``` would otherwise close a plain ``` fence and
+    inject markdown into the human's review receipt. A fence of
+    (longest-backtick-run + 1) backticks, minimum 3, contains any run inside
+    the body (CommonMark). For content with no backticks this is byte-identical
+    to a plain ``` fence.
+    """
+    delimiter = "`" * max(3, _longest_backtick_run(body) + 1)
+    return [f"{delimiter}{info}", body, delimiter]
+
+
 def _render(approval_id: str, request: ApprovalRequest) -> str:
     """Render the complete current story of one approval as markdown."""
     proposal = request.proposal
@@ -131,15 +157,11 @@ def _render(approval_id: str, request: ApprovalRequest) -> str:
         "",
         "## Proposed commands",
         "",
-        "```",
-        *proposal.config_commands,
-        "```",
+        *_fence("\n".join(proposal.config_commands)),
         "",
         "## Dry-run diff",
         "",
-        "```diff",
-        proposal.dry_run_diff,
-        "```",
+        *_fence(proposal.dry_run_diff, "diff"),
         "",
         "## History",
         "",
