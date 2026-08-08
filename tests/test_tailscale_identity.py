@@ -197,10 +197,15 @@ class TestServerIdentityWiring:
         monkeypatch.setenv(
             "NETAGENT_TAILNET_APPROVERS", "gmasters428@github, pi5"
         )
-        monkeypatch.setattr(server.shutil, "which", lambda _: "tailscale")
+        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/tailscale")
+        monkeypatch.setattr(
+            server.trusted_path_mod, "tailscale_self_name", lambda binary: "agent-host"
+        )
         identity = server._build_identity()
         assert isinstance(identity, trusted_path.TailscaleIdentity)
         assert identity.approvers == frozenset({"gmasters428@github", "pi5"})
+        # The agent's own node name is captured so it can be excluded (issue #22).
+        assert identity.self_name == "agent-host"
 
 
 class TestWhoisParsing:
@@ -216,3 +221,96 @@ class TestWhoisParsing:
 
     def test_missing_fields_yield_empty_strings(self):
         assert trusted_path.tailnet_names({}) == ("", "")
+
+
+# ----------------------------------------------------------------------------
+# Mode-B hardening (issue #22): self-node refusal, IP normalization, binary pin.
+# ----------------------------------------------------------------------------
+
+
+class TestSelfNodeRefusal:
+    """The agent's own host must never approve, even when its login is on the
+    allowlist (every device on an account shares one tailnet login)."""
+
+    @staticmethod
+    def _whois_self(ip: str) -> dict:
+        # whois resolves the connecting peer to THIS machine's own node.
+        return {
+            "Node": {"ComputedName": "agent-host.tail1234.ts.net"},
+            "UserProfile": {"LoginName": "gmasters428@github"},
+        }
+
+    def test_peer_resolving_to_self_node_is_refused(self):
+        identity = trusted_path.TailscaleIdentity(
+            approvers=frozenset({"gmasters428@github"}),  # the login IS allowlisted
+            whois=self._whois_self,
+            self_name="agent-host",
+        )
+        request = _pending()
+        with pytest.raises(trusted_path.TrustedPathError) as err:
+            trusted_path.resolve_trusted(
+                request, decision="approve", approver="x", reason="r",
+                submitted_secret="", identity=identity,
+                source_ip="100.99.99.99",  # NOT in the local-addr refusal set
+                local_addrs=_LOCAL_ADDRS,
+            )
+        msg = str(err.value).lower()
+        assert "own tailnet node" in msg or "agent's host" in msg
+        assert request.state is ApprovalState.PENDING
+
+    def test_a_different_node_on_the_same_login_still_approves(self):
+        # The operator's phone shares the login but is a DIFFERENT node -> ok.
+        identity = trusted_path.TailscaleIdentity(
+            approvers=frozenset({"gmasters428@github"}),
+            whois=_whois_garrett,  # device 'garretts-s24-ultra' != self_name
+            self_name="agent-host",
+        )
+        resolved = trusted_path.resolve_trusted(
+            _pending(), decision="approve", approver="x", reason="r",
+            submitted_secret="", identity=identity, source_ip=_PEER,
+            local_addrs=_LOCAL_ADDRS,
+        )
+        assert resolved.state is ApprovalState.APPROVED
+        assert resolved.approver == "gmasters428@github"
+
+
+class TestLocalSourceNormalization:
+    def test_ipv4_mapped_ipv6_of_a_local_address_is_refused(self):
+        # ::ffff:192.168.1.20 IS 192.168.1.20, a local address (issue #22).
+        request = _pending()
+        with pytest.raises(trusted_path.TrustedPathError) as err:
+            _resolve(request, _identity(), source="::ffff:192.168.1.20")
+        assert "local" in str(err.value).lower()
+
+    def test_a_genuine_remote_peer_is_unaffected(self):
+        assert _resolve(_pending(), _identity()).state is ApprovalState.APPROVED
+
+
+class TestBinaryPinning:
+    def test_whois_invokes_the_given_absolute_binary(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+
+            class _R:
+                stdout = '{"Node":{"ComputedName":"x"},"UserProfile":{"LoginName":"y"}}'
+
+            return _R()
+
+        monkeypatch.setattr(trusted_path.subprocess, "run", fake_run)
+        trusted_path.tailscale_whois("100.1.2.3", binary="/opt/bin/tailscale")
+        assert seen["cmd"][0] == "/opt/bin/tailscale"  # absolute path, not bare name
+        assert "whois" in seen["cmd"]
+
+    def test_self_name_parses_self_computed_name(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            assert cmd[0] == "/opt/bin/tailscale" and "status" in cmd
+
+            class _R:
+                stdout = '{"Self":{"ComputedName":"agent-host.tailnet.ts.net"}}'
+
+            return _R()
+
+        monkeypatch.setattr(trusted_path.subprocess, "run", fake_run)
+        assert trusted_path.tailscale_self_name("/opt/bin/tailscale") == "agent-host"
