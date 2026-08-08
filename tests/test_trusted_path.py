@@ -345,6 +345,24 @@ class TestFailDenyBindSelection:
         with pytest.raises(trusted_path.TrustedPathError):
             trusted_path.select_bind_address([])
 
+    def test_operator_bind_override_wins(self):
+        assert (
+            trusted_path.resolve_bind("192.168.1.20", ["127.0.0.1", "10.0.0.5"])
+            == "192.168.1.20"
+        )
+
+    def test_loopback_override_is_refused(self):
+        """The override is an operator knob, not an escape hatch."""
+        for bad in ("127.0.0.1", "127.9.9.9", "::1", "  "):
+            with pytest.raises(trusted_path.TrustedPathError):
+                trusted_path.resolve_bind(bad, ["192.168.1.20"])
+
+    def test_no_override_falls_back_to_selection(self):
+        assert (
+            trusted_path.resolve_bind(None, ["127.0.0.1", "192.168.1.20"])
+            == "192.168.1.20"
+        )
+
 
 # ----------------------------------------------------------------------------
 # 7. Artifacts stamp the channel; tool mode reads as unattested.

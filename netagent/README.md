@@ -173,8 +173,10 @@ accept them for approval at all. Instead:
    scrypt hash (`approval-secret.json`, gitignored). Re-running rotates it.
 
 2. **Approve from a second device.** `request_approval` returns an
-   `approval_url` (the surface binds a non-loopback address; port via
-   `NETAGENT_APPROVAL_PORT`, default 8484). Open it on your phone, review
+   `approval_url` (the surface binds a non-loopback address; pick which
+   one with `NETAGENT_APPROVAL_BIND` if the machine holds several -- e.g.
+   pin your LAN address so a phone on the same Wi-Fi can reach it; port
+   via `NETAGENT_APPROVAL_PORT`, default 8484). Open it on your phone, review
    the exact commands and dry-run diff, enter your name, reason, and the
    secret, and decide there.
 

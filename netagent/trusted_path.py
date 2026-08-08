@@ -126,6 +126,30 @@ def select_bind_address(candidates: list[str] | None = None) -> str:
     )
 
 
+def resolve_bind(
+    override: str | None, candidates: list[str] | None = None
+) -> str:
+    """The surface's bind address: operator override, else auto-selection.
+
+    A machine can hold several non-loopback addresses (LAN, mesh, virtual
+    adapters) and only the operator knows which one their second device can
+    reach -- NETAGENT_APPROVAL_BIND pins it. The override is a knob, not an
+    escape hatch: loopback is refused here exactly as in auto-selection.
+    """
+    if override is not None:
+        addr = override.strip()
+        if not addr or addr in _LOOPBACKS or addr.startswith("127."):
+            raise TrustedPathError(
+                f"NETAGENT_APPROVAL_BIND={override!r} is not usable: the "
+                "approval surface never listens on loopback (a same-machine "
+                "approval endpoint is the exact thing the trusted path "
+                "exists to prevent). Set it to an address your second "
+                "device can reach."
+            )
+        return addr
+    return select_bind_address(candidates)
+
+
 # -- enrollment: hash on disk, plaintext only on the second device -----------
 
 

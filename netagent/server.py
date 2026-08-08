@@ -561,7 +561,9 @@ def main() -> None:
             _enrollment_record = trusted_path_mod.load_enrollment(
                 _secret_file_path()
             )
-            bind = trusted_path_mod.select_bind_address()
+            bind = trusted_path_mod.resolve_bind(
+                os.environ.get("NETAGENT_APPROVAL_BIND")
+            )
         except trusted_path_mod.TrustedPathError as err:
             print(f"netagent: refusing to start: {err}", file=sys.stderr)
             raise SystemExit(2)
