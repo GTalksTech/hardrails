@@ -186,3 +186,11 @@ class TestApproveOverTls:
         finally:
             surface.stop()
             server._approvals.clear()
+
+
+class TestProtocolFloor:
+    def test_context_refuses_pre_tls12(self, cert_pair):
+        """Legacy TLS 1.0/1.1 are broken protocols; the floor is 1.2."""
+        cert_file, key_file = cert_pair
+        ctx = trusted_path.tls_from_env(str(cert_file), str(key_file))
+        assert ctx.minimum_version >= ssl.TLSVersion.TLSv1_2

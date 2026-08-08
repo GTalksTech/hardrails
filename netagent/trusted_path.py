@@ -199,6 +199,10 @@ def tls_from_env(cert_path: str | None, key_path: str | None) -> ssl.SSLContext 
             "what was configured."
         )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # Pin the floor explicitly: modern interpreters default to 1.2+, but the
+    # default is inherited from the OpenSSL build -- on an old stack it can
+    # be 1.0. A security surface does not inherit its protocol floor.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
         context.load_cert_chain(certfile=cert_path, keyfile=key_path)
     except (OSError, ssl.SSLError) as exc:
