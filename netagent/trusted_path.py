@@ -46,11 +46,14 @@ import functools
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import re
 import secrets as _secrets
 import socket
+import subprocess
 import threading
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
@@ -105,18 +108,37 @@ def local_addresses() -> frozenset[str]:
     return frozenset(addrs)
 
 
-def select_bind_address(candidates: list[str] | None = None) -> str:
+def _is_cgnat(addr: str) -> bool:
+    """True for Tailscale-style CGNAT addresses (100.64.0.0/10)."""
+    try:
+        return ipaddress.ip_address(addr) in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
+def select_bind_address(
+    candidates: list[str] | None = None, prefer_cgnat: bool = False
+) -> str:
     """Pick the non-loopback address the surface binds. Fail-deny otherwise.
 
     The surface must never listen on loopback -- a loopback listener would
     be a same-machine approval endpoint, which is the exact thing this
-    module exists to prevent.
+    module exists to prevent. With prefer_cgnat (tailnet identity mode),
+    the Tailscale interface address wins when present, since that is the
+    network the approving peer will arrive on.
     """
     if candidates is None:
         candidates = sorted(local_addresses())
-    for addr in candidates:
-        if addr not in _LOOPBACKS and not addr.startswith("fe80:"):
-            return addr
+    usable = [
+        a for a in candidates
+        if a not in _LOOPBACKS and not a.startswith("fe80:")
+    ]
+    if prefer_cgnat:
+        for addr in usable:
+            if _is_cgnat(addr):
+                return addr
+    if usable:
+        return usable[0]
     raise TrustedPathError(
         "No non-loopback address available: the approval surface cannot "
         "start, so approvals are impossible (fail-deny). Connect the "
@@ -124,6 +146,30 @@ def select_bind_address(candidates: list[str] | None = None) -> str:
         "tool mode (NETAGENT_APPROVAL_MODE=tool) if no device will be "
         "touched."
     )
+
+
+def resolve_bind(
+    override: str | None, candidates: list[str] | None = None
+) -> str:
+    """The surface's bind address: operator override, else auto-selection.
+
+    A machine can hold several non-loopback addresses (LAN, mesh, virtual
+    adapters) and only the operator knows which one their second device can
+    reach -- NETAGENT_APPROVAL_BIND pins it. The override is a knob, not an
+    escape hatch: loopback is refused here exactly as in auto-selection.
+    """
+    if override is not None:
+        addr = override.strip()
+        if not addr or addr in _LOOPBACKS or addr.startswith("127."):
+            raise TrustedPathError(
+                f"NETAGENT_APPROVAL_BIND={override!r} is not usable: the "
+                "approval surface never listens on loopback (a same-machine "
+                "approval endpoint is the exact thing the trusted path "
+                "exists to prevent). Set it to an address your second "
+                "device can reach."
+            )
+        return addr
+    return select_bind_address(candidates)
 
 
 # -- enrollment: hash on disk, plaintext only on the second device -----------
@@ -186,6 +232,86 @@ def _scrypt(
     return hashlib.scrypt(secret.encode("utf-8"), salt=salt, n=n, r=r, p=p)
 
 
+# -- identity: WHO stands behind a submission (check 2, pluggable) -----------
+#
+# The identity ladder (design doc §5): each mode swaps only this seam. The
+# surface, the local-source check, provenance, and fail-deny never change.
+
+
+@dataclass(frozen=True)
+class SecretIdentity:
+    """Mode A: possession of the enrolled secret.
+
+    Attests "an off-machine holder of the secret decided." The approver
+    name is the one the human typed -- self-reported, but self-reported by
+    the secret-holder through a channel the agent cannot write.
+    """
+
+    enrollment: dict
+
+    def verify(
+        self, source_ip: str, submitted_secret: str, claimed_approver: str
+    ) -> str:
+        if not verify_secret(submitted_secret, self.enrollment):
+            raise TrustedPathError(
+                "Refused: the submitted secret does not match the enrolled "
+                "approval secret."
+            )
+        return claimed_approver
+
+
+def tailnet_names(whois_payload: dict) -> tuple[str, str]:
+    """Extract (login, short device name) from a tailscale whois payload."""
+    login = (whois_payload.get("UserProfile") or {}).get("LoginName") or ""
+    device = (whois_payload.get("Node") or {}).get("ComputedName") or ""
+    return login, device.split(".")[0]
+
+
+def tailscale_whois(source_ip: str) -> dict:
+    """Ask the local tailscaled who a peer address belongs to (via the CLI)."""
+    proc = subprocess.run(
+        ["tailscale", "whois", "--json", source_ip],
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+    return json.loads(proc.stdout)
+
+
+@dataclass(frozen=True)
+class TailscaleIdentity:
+    """Mode B: the tailnet attests the approver.
+
+    whois resolves the connecting peer to a tailnet login and device name;
+    one of them must be on the explicit approver allowlist. The recorded
+    approver is the ATTESTED login (falling back to the device name for
+    tagged devices) -- never the typed name. An unreachable tailscaled is
+    a refusal, not a downgrade: there is no silent fall back to
+    secret-only (fail-deny, design doc §6).
+    """
+
+    approvers: frozenset[str]
+    whois: Callable[[str], dict] = tailscale_whois
+
+    def verify(
+        self, source_ip: str, submitted_secret: str, claimed_approver: str
+    ) -> str:
+        try:
+            payload = self.whois(source_ip)
+        except Exception as exc:  # noqa: BLE001 -- every failure is a refusal
+            raise TrustedPathError(
+                f"Refused: tailscale whois for {source_ip} failed "
+                f"({type(exc).__name__}: {exc}). Approvals are impossible "
+                "until tailscaled answers (fail-deny; no fallback)."
+            ) from exc
+        login, device = tailnet_names(payload)
+        allowed = {a.strip().lower() for a in self.approvers if a.strip()}
+        if login.lower() not in allowed and device.lower() not in allowed:
+            raise TrustedPathError(
+                f"Refused: tailnet peer '{login or device or source_ip}' is "
+                "not on the approver allowlist (NETAGENT_TAILNET_APPROVERS)."
+            )
+        return login or device
+
+
 # -- the resolver: both checks, then provenance ------------------------------
 
 
@@ -196,7 +322,7 @@ def resolve_trusted(
     approver: str,
     reason: str,
     submitted_secret: str,
-    enrollment: dict,
+    identity: SecretIdentity | TailscaleIdentity,
     source_ip: str,
     local_addrs: frozenset[str] | None = None,
 ) -> ApprovalRequest:
@@ -204,9 +330,12 @@ def resolve_trusted(
     sets TRUSTED_PATH provenance.
 
     Checks in order (see module docstring for why): local source refused
-    first -- before the credential is even examined -- then the enrolled
-    hash, then the ordinary approval state machine. Any refusal raises
-    TrustedPathError and leaves the request untouched.
+    first -- before any credential or identity is even examined -- then the
+    identity seam (enrolled hash in mode A, tailnet whois in mode B), then
+    the ordinary approval state machine. Any refusal raises
+    TrustedPathError and leaves the request untouched. The approver put on
+    the record is whatever the identity seam returns -- the typed name in
+    mode A, the attested tailnet identity in mode B.
     """
     if local_addrs is None:
         local_addrs = local_addresses()
@@ -216,15 +345,11 @@ def resolve_trusted(
             "approval surface only accepts decisions from a device that is "
             "not this machine."
         )
-    if not verify_secret(submitted_secret, enrollment):
-        raise TrustedPathError(
-            "Refused: the submitted secret does not match the enrolled "
-            "approval secret."
-        )
+    attested = identity.verify(source_ip, submitted_secret, approver)
     if decision == "approve":
-        approval_mod.approve(request, approver, reason)
+        approval_mod.approve(request, attested, reason)
     elif decision == "reject":
-        approval_mod.reject(request, approver, reason)
+        approval_mod.reject(request, attested, reason)
     else:
         raise TrustedPathError("decision must be 'approve' or 'reject'.")
     request.channel = ApprovalChannel.TRUSTED_PATH
@@ -232,6 +357,20 @@ def resolve_trusted(
 
 
 # -- the page ----------------------------------------------------------------
+
+
+_PAGE_CSS = """\
+  body { font-family: system-ui, sans-serif; margin: 1.5rem; max-width: 40rem; }
+  pre { background: #f4f4f4; padding: .75rem; overflow-x: auto; border-radius: 6px; }
+  .state { font-weight: 600; }
+  form { margin-top: 1.5rem; display: grid; gap: .6rem; }
+  input, textarea { font: inherit; padding: .45rem; }
+  button { font: inherit; padding: .55rem 1.2rem; cursor: pointer; }
+  .approve { background: #146c2e; color: #fff; border: 0; border-radius: 6px; }
+  .reject  { background: #8b1a1a; color: #fff; border: 0; border-radius: 6px; }
+  .rule { color: #555; font-size: .85rem; }
+  .verdict-ok { color: #146c2e; }
+  .verdict-no { color: #8b1a1a; }"""
 
 
 def render_approval_page(approval_id: str, request: ApprovalRequest) -> str:
@@ -253,15 +392,7 @@ def render_approval_page(approval_id: str, request: ApprovalRequest) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Approval {safe_id} — netagent</title>
 <style>
-  body {{ font-family: system-ui, sans-serif; margin: 1.5rem; max-width: 40rem; }}
-  pre {{ background: #f4f4f4; padding: .75rem; overflow-x: auto; border-radius: 6px; }}
-  .state {{ font-weight: 600; }}
-  form {{ margin-top: 1.5rem; display: grid; gap: .6rem; }}
-  input, textarea {{ font: inherit; padding: .45rem; }}
-  button {{ font: inherit; padding: .55rem 1.2rem; cursor: pointer; }}
-  .approve {{ background: #146c2e; color: #fff; border: 0; border-radius: 6px; }}
-  .reject  {{ background: #8b1a1a; color: #fff; border: 0; border-radius: 6px; }}
-  .rule {{ color: #555; font-size: .85rem; }}
+{_PAGE_CSS}
 </style>
 </head>
 <body>
@@ -282,6 +413,27 @@ def render_approval_page(approval_id: str, request: ApprovalRequest) -> str:
   <p class="rule">Only submit from a device that is not the agent's
   machine. Submissions from the server's own addresses are refused.</p>
 </form>
+</body>
+</html>
+"""
+
+
+def render_result_page(title: str, detail: str, ok: bool) -> str:
+    """The post-decision page: same styling as the review page, one verdict."""
+    css_class = "verdict-ok" if ok else "verdict-no"
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)} — netagent</title>
+<style>
+{_PAGE_CSS}
+</style>
+</head>
+<body>
+<h1 class="{css_class}">{html.escape(title)}</h1>
+<p>{html.escape(detail)}</p>
 </body>
 </html>
 """
@@ -392,14 +544,24 @@ class ApprovalSurface:
         if "error" in result:
             _respond(
                 handler, 403,
-                f"<h1>Refused</h1><p>{html.escape(result['error'])}</p>",
+                render_result_page(
+                    "Refused", result["error"], ok=False
+                ),
             )
         else:
             _respond(
                 handler, 200,
-                f"<h1>{html.escape(result['state'])}</h1>"
-                f"<p>Approval {html.escape(approval_id)} recorded. This "
-                "decision is single-use and on the audit log.</p>",
+                render_result_page(
+                    result["state"].capitalize(),
+                    f"Approval {approval_id} recorded"
+                    + (
+                        f" for {result['approver']}"
+                        if result.get("approver")
+                        else ""
+                    )
+                    + ". This decision is single-use and on the audit log.",
+                    ok=True,
+                ),
             )
 
 

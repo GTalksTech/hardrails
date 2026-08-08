@@ -173,8 +173,10 @@ accept them for approval at all. Instead:
    scrypt hash (`approval-secret.json`, gitignored). Re-running rotates it.
 
 2. **Approve from a second device.** `request_approval` returns an
-   `approval_url` (the surface binds a non-loopback address; port via
-   `NETAGENT_APPROVAL_PORT`, default 8484). Open it on your phone, review
+   `approval_url` (the surface binds a non-loopback address; pick which
+   one with `NETAGENT_APPROVAL_BIND` if the machine holds several -- e.g.
+   pin your LAN address so a phone on the same Wi-Fi can reach it; port
+   via `NETAGENT_APPROVAL_PORT`, default 8484). Open it on your phone, review
    the exact commands and dry-run diff, enter your name, reason, and the
    secret, and decide there.
 
@@ -188,6 +190,27 @@ the audit log like everything else.
 Fail-deny: in trusted mode the server refuses to start without an
 enrollment and a non-loopback address, and if the surface goes down,
 approvals are impossible until it returns. There is no runtime fallback.
+
+### Tailnet identity (optional upgrade)
+
+If you run [Tailscale](https://tailscale.com/), the tailnet can *attest*
+the approver instead of a secret merely implying one:
+
+```bash
+NETAGENT_APPROVAL_IDENTITY=tailscale
+NETAGENT_TAILNET_APPROVERS=you@example.com,your-phone
+```
+
+The server asks the local tailscaled who the connecting peer is
+(`tailscale whois`) and requires that login or device name to be on the
+allowlist. The approver recorded in the artifact and audit log is the
+**tailnet login — attested, not typed** — and transport is
+WireGuard-encrypted, which also closes plain HTTP's LAN-sniffing gap. No
+secret is needed or enrolled in this mode; the surface prefers the
+Tailscale interface address automatically (override with
+`NETAGENT_APPROVAL_BIND`). Fail-deny still applies: an empty allowlist or
+a missing/unreachable tailscaled refuses to start or refuses the
+submission — there is no silent downgrade to secret-only.
 
 ### Testing-only relayed mode
 

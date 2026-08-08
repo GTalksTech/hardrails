@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hardrails"
-version = "0.2.0.dev0"
+version = "0.3.0.dev0"
 description = "Hardrails reference implementation: a bounded network agent. Deterministic boundaries around a non-deterministic agent."
 readme = "README.md"
 license = "Apache-2.0"
