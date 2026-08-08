@@ -15,9 +15,10 @@ Boundary rationale (this file is read on camera):
 
     "Read-only by default" is not a comment we hope the agent honors -- it is
     enforced by the shape of this module. `DeviceConnection` exposes ONLY show
-    helpers, and `run_show()` inspects every command and raises if it smells
-    like configuration or a write. There is no method here that enters config
-    mode. The single path that mutates a device lives in remediation.py, behind
+    helpers, and `run_show()` validates every command against a positive
+    read-only allowlist -- one show/ping/traceroute, no second command, no
+    redirect -- and refuses anything else. There is no method here that enters
+    config mode. The single path that mutates a device lives in remediation.py, behind
     an approved ApprovalRequest. That separation is the whole point: even a
     confused or adversarial agent cannot turn a "read" into a "write" through
     this object, because the capability simply is not present.
@@ -26,7 +27,6 @@ Boundary rationale (this file is read on camera):
 from __future__ import annotations
 
 import os
-import re
 from getpass import getpass
 from pathlib import Path
 
@@ -48,25 +48,36 @@ _CONNECT_TIMEOUT = 15
 _READ_TIMEOUT = 30
 
 # ----------------------------------------------------------------------------
-# Write-command guard rail.
+# Read-path command policy: a positive allowlist.
 # ----------------------------------------------------------------------------
-# Any command matching one of these is refused on the READ path. This is a
-# belt-and-suspenders check: the read object has no config-mode method at all,
-# but if someone routes a hostile string through run_show() we still block it
-# with a clear reason rather than silently shipping it to the device.
-_WRITE_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^\s*conf(igure)?\b", re.IGNORECASE),        # configure terminal
-    re.compile(r"^\s*(no|default)\s+", re.IGNORECASE),        # negate / default a line
-    re.compile(r"^\s*write\b", re.IGNORECASE),                # write memory
-    re.compile(r"^\s*copy\b", re.IGNORECASE),                 # copy run start, tftp, etc.
-    re.compile(r"^\s*(reload|erase|delete|format)\b", re.IGNORECASE),
-    re.compile(r"^\s*clear\b", re.IGNORECASE),                # clears mutate state (counters/BGP)
-    re.compile(r"^\s*(interface|router|line|vlan|ip\s+route)\b", re.IGNORECASE),  # config-mode entry
-)
+# `run_show` is a READ tool -- the boundary lets it run without an approval, so
+# THIS policy is the per-command enforcement of "read-only by default" (boundary
+# principle 1). It is a positive allowlist, not a blocklist: the tool contract
+# is exactly ONE read command, so a command is permitted only if it is one show/
+# ping/traceroute with no second command smuggled in and no output redirect.
+# Anything we do not positively recognise is refused -- an unforeseen verb fails
+# closed instead of sailing through, which is the whole point of an allowlist.
+#
+# Why not a blocklist of mutating verbs (the old design): it was bypassable. The
+# old patterns were anchored to the START of the string and matched without
+# re.MULTILINE, so a newline or ';' hid a second command from them
+# ("show version\nconfigure terminal"), and abbreviations (`wr`, `rel`) and
+# unlisted EXEC verbs (`debug`, `tclsh`) were never covered. netmiko.send_command
+# writes the raw string -- interior newlines and all -- so any smuggled line
+# reaches the wire. See docs/specs/2026-08-08-read-path-command-allowlist.md.
+
+# The only verbs allowed to reach the wire on the read path. Full verbs only --
+# the agent surface emits them in full, and refusing abbreviations keeps the
+# allowlist unambiguous.
+_READ_VERBS = frozenset({"show", "ping", "traceroute"})
+
+# A read may be piped to a FILTER (include/exclude/begin/section/count), but
+# never to one of these -- they write to the device filesystem.
+_PIPE_WRITE_TARGETS = frozenset({"redirect", "tee", "append"})
 
 
 class WriteAttemptOnReadPath(RuntimeError):
-    """Raised when a config/write command is sent through the read-only path.
+    """Raised when a non-read command is sent through the read-only path.
 
     Surfacing this as a distinct exception lets the boundary log it as an
     attempted mutation rather than a generic error -- that distinction matters
@@ -74,15 +85,47 @@ class WriteAttemptOnReadPath(RuntimeError):
     """
 
 
-def _looks_like_write(command: str) -> bool:
-    """Return True if `command` would change device state.
+def _read_command_rejection(command: str) -> str | None:
+    """Why `command` is not a single permitted read command, or None if it is.
 
-    We default to caution: 'show', 'ping', and 'traceroute' are the only verbs
-    we actually expect on this path, but rather than allow-list every safe show
-    variant we block the known mutating verbs explicitly and let genuine reads
-    through. If in doubt, prefer a false positive (block) over a false negative.
+    The allowlist, in order: reject anything that packs in more than one command
+    (embedded newline, carriage return, ';', or any other control character);
+    require the first token to be a known read verb; and refuse an output
+    redirect. Returning a reason (not a bool) lets the caller tell the agent
+    exactly which rule it hit.
     """
-    return any(pattern.search(command) for pattern in _WRITE_COMMAND_PATTERNS)
+    if not command or not command.strip():
+        return "empty command: send one show/ping/traceroute command."
+    # One command only. A newline / CR / ';' means a second command is riding
+    # along, and netmiko would deliver every line to the device -- this is
+    # exactly where a "read" turns into a write. Refuse the whole string.
+    if any(sep in command for sep in ("\n", "\r", ";")):
+        return (
+            "more than one command on the read path (found a newline, carriage "
+            "return, or ';'). Send exactly one show/ping/traceroute command; "
+            "changes go through a RemediationProposal and an approved "
+            "ApprovalRequest."
+        )
+    if any(ord(ch) < 0x20 for ch in command):
+        return "control characters are not allowed in a read command."
+    first = command.split()[0].lower()
+    if first not in _READ_VERBS:
+        return (
+            f"'{first}' is not a permitted read verb. The read path allows only "
+            f"{', '.join(sorted(_READ_VERBS))} (full verb, no abbreviations). "
+            "A change must go through a RemediationProposal and an approved "
+            "ApprovalRequest."
+        )
+    # Filter pipes are fine; write-target pipes are not.
+    if "|" in command:
+        after_pipe = [tok.lower() for tok in command.split("|", 1)[1].split()]
+        hit = next((t for t in after_pipe if t in _PIPE_WRITE_TARGETS), None)
+        if hit is not None:
+            return (
+                f"output redirect '| {hit}' writes to the device and is refused "
+                "on the read path (filters like '| include' are fine)."
+            )
+    return None
 
 
 class Device(dict):
@@ -206,18 +249,15 @@ class DeviceConnection:
     def run_show(self, command: str) -> str:
         """Run a single READ command and return its text output.
 
-        Raises WriteAttemptOnReadPath if `command` would mutate the device.
-        This is the choke point: nothing reaches the wire from this object
-        without passing the write guard first.
+        Raises WriteAttemptOnReadPath if `command` is not a single permitted
+        read command (see the read-path allowlist above). This is the choke
+        point: nothing reaches the wire from this object without passing it.
         """
         if self._conn is None:
             raise RuntimeError("Not connected. Use DeviceConnection as a context manager.")
-        if _looks_like_write(command):
-            raise WriteAttemptOnReadPath(
-                f"Refused: '{command}' looks like a configuration/write command. "
-                "The read path is read-only; changes must go through a "
-                "RemediationProposal and an approved ApprovalRequest."
-            )
+        rejection = _read_command_rejection(command)
+        if rejection is not None:
+            raise WriteAttemptOnReadPath(f"Refused: {rejection}")
         return self._conn.send_command(command, read_timeout=_READ_TIMEOUT)
 
     def get_version(self) -> str:
