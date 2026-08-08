@@ -35,6 +35,9 @@ lab = [
 # Run by the HUMAN, once, in their own terminal: prints the trusted-path
 # approval secret a single time and stores only its hash.
 netagent-enroll = "netagent.enroll:main"
+# Verify the boundary yourself: runs the spec's 8-item conformance checklist
+# against the real boundary and prints PASS/FAIL. Exits non-zero on any failure.
+hardrails-conformance = "netagent.conformance:main"
 
 [project.urls]
 Homepage = "https://github.com/GTalksTech/hardrails"
