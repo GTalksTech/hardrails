@@ -42,6 +42,7 @@ address the machine does not own.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import html
@@ -74,6 +75,7 @@ class TrustedPathError(RuntimeError):
 # -- machine identity --------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=1)
 def local_addresses() -> frozenset[str]:
     """Every address this machine holds -- the refusal set for check 1.
 
@@ -81,6 +83,12 @@ def local_addresses() -> frozenset[str]:
     resolves to, plus the primary outbound interface (UDP-connect trick; no
     packet is sent). A miss here is defense-in-depth lost, not the gate
     lost -- check 2 still requires the enrolled secret.
+
+    Computed once per process (hostname resolution can take seconds on some
+    platforms, and this runs inside the request handler). An address the
+    machine acquires later is therefore not in the refusal set until
+    restart -- acceptable, because the secret check still gates, and the
+    set is a refusal list, not a trust list.
     """
     addrs = set(_LOOPBACKS)
     try:

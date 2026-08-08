@@ -453,7 +453,7 @@ class TestSurfaceOverTheWire:
             data = urllib.parse.urlencode(fields).encode()
             try:
                 with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/a/appr-w1", data=data, timeout=5
+                    f"http://127.0.0.1:{port}/a/appr-w1", data=data, timeout=30
                 ) as resp:
                     return resp.status, resp.read().decode()
             except urllib.error.HTTPError as err:
