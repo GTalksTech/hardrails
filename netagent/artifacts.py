@@ -125,6 +125,7 @@ def _render(approval_id: str, request: ApprovalRequest) -> str:
         f"- **Device:** {proposal.device}",
         f"- **Requested at:** {request.requested_at.isoformat()}",
         f"- **Resolved at:** {resolved}",
+        f"- **Applied at:** {request.applied_at.isoformat() if request.applied_at else '--'}",
         f"- **Approver:** {request.approver or '--'}",
         f"- **Reason:** {request.reason or '--'}",
         "",

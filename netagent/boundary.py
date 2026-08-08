@@ -225,6 +225,19 @@ class Boundary:
                 f"this server. {self._REQUIRED_FLOW}",
             )
 
+        # Single-use (issue #18): an approval that was already applied is spent.
+        # One human yes authorizes exactly one apply; a replay must build a new
+        # proposal and earn a fresh approval. Checked before the generic state
+        # test so the block reason names the real reason, not "not approved".
+        if approval.state is ApprovalState.APPLIED:
+            return self._record(
+                spec.name, arguments, ToolDecision.BLOCKED,
+                "This approval was already applied. Approvals are single-use -- "
+                "one human yes authorizes exactly one apply. Build a new "
+                "proposal and get a fresh approval for another change. "
+                f"{self._REQUIRED_FLOW}",
+            )
+
         if approval.state is not ApprovalState.APPROVED:
             return self._record(
                 spec.name, arguments, ToolDecision.BLOCKED,

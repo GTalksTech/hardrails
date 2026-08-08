@@ -133,6 +133,11 @@ class ApprovalState(str, enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    # Terminal: the approved change was applied. An approval is single-use --
+    # one human yes authorizes exactly one apply (issue #18). apply_approved
+    # sets this after a successful push; the boundary refuses a mutation whose
+    # approval is APPLIED, so the same yes can never be replayed.
+    APPLIED = "applied"
 
 
 class ApprovalChannel(str, enum.Enum):
@@ -157,6 +162,11 @@ class ApprovalRequest(BaseModel):
     state: ApprovalState = ApprovalState.PENDING
     requested_at: datetime = Field(default_factory=_utcnow)
     resolved_at: datetime | None = None
+    applied_at: datetime | None = Field(
+        None,
+        description="When the approved change was applied. Set once, on the "
+        "single successful apply -- an approval is single-use (issue #18).",
+    )
     approver: str | None = Field(
         None, description="Who decided. Recorded for the audit trail."
     )
