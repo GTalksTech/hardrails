@@ -117,6 +117,37 @@ def _is_cgnat(addr: str) -> bool:
         return False
 
 
+def _normalize_addr(addr: str):
+    """Canonical IP for comparison, or None if unparseable.
+
+    Strips an IPv6 zone id (`%eth0`) and collapses an IPv4-mapped IPv6 address
+    (`::ffff:192.168.1.20`) to its IPv4 form, so divergent spellings of the same
+    address compare equal (issue #22).
+    """
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def _source_is_local(source_ip: str, local_addrs: frozenset[str]) -> bool:
+    """True if source_ip is one of this machine's addresses.
+
+    Compared on NORMALIZED IP values, not raw strings: exact-string membership
+    missed IPv4-mapped IPv6, zone-scoped, and format-skewed forms of a local
+    address (issue #22). An unparseable source is treated as non-local -- the
+    identity seam (check 2) still has to attest it.
+    """
+    src = _normalize_addr(source_ip)
+    if src is None:
+        return False
+    normalized = {n for n in (_normalize_addr(a) for a in local_addrs) if n is not None}
+    return src in normalized
+
+
 def select_bind_address(
     candidates: list[str] | None = None, prefer_cgnat: bool = False
 ) -> str:
@@ -308,13 +339,36 @@ def tailnet_names(whois_payload: dict) -> tuple[str, str]:
     return login, device.split(".")[0]
 
 
-def tailscale_whois(source_ip: str) -> dict:
-    """Ask the local tailscaled who a peer address belongs to (via the CLI)."""
+def tailscale_whois(source_ip: str, binary: str = "tailscale") -> dict:
+    """Ask the local tailscaled who a peer address belongs to (via the CLI).
+
+    `binary` should be an ABSOLUTE path resolved at startup (see
+    server._build_identity, which binds it): invoking a bare name at request
+    time would let a same-user attacker win the executable search with a planted
+    `tailscale` and forge the attestation (issue #22).
+    """
     proc = subprocess.run(
-        ["tailscale", "whois", "--json", source_ip],
+        [binary, "whois", "--json", source_ip],
         capture_output=True, text=True, timeout=10, check=True,
     )
     return json.loads(proc.stdout)
+
+
+def tailscale_self_name(binary: str = "tailscale") -> str:
+    """This machine's own short tailnet name (`Self.ComputedName`).
+
+    Captured once at startup so the resolver can refuse a peer that resolves to
+    THIS node -- the agent's host must never be an approver, even when its login
+    is on the allowlist (every device on an account shares one login). Same
+    absolute-binary discipline as tailscale_whois (issue #22).
+    """
+    proc = subprocess.run(
+        [binary, "status", "--json"],
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+    payload = json.loads(proc.stdout)
+    name = (payload.get("Self") or {}).get("ComputedName") or ""
+    return name.split(".")[0]
 
 
 @dataclass(frozen=True)
@@ -331,6 +385,12 @@ class TailscaleIdentity:
 
     approvers: frozenset[str]
     whois: Callable[[str], dict] = tailscale_whois
+    # This machine's own short tailnet name. The agent's host must never be an
+    # approver -- every device on an account shares one tailnet login, so a login
+    # allowlist would otherwise vouch for the agent's own machine -- so a peer
+    # that resolves to this name is refused regardless of the allowlist. Empty
+    # disables the check; the server always supplies it (issue #22).
+    self_name: str = ""
 
     def verify(
         self, source_ip: str, submitted_secret: str, claimed_approver: str
@@ -344,6 +404,16 @@ class TailscaleIdentity:
                 "until tailscaled answers (fail-deny; no fallback)."
             ) from exc
         login, device = tailnet_names(payload)
+        # Self-node refusal: the approving peer must be a DIFFERENT node than the
+        # one the agent runs on. This holds even when the enumeration-based
+        # local-source check missed the machine's own tailnet address, and even
+        # when the allowlist lists the operator's login (issue #22).
+        if self.self_name and device and device.lower() == self.self_name.lower():
+            raise TrustedPathError(
+                f"Refused: the connecting peer is this machine's own tailnet "
+                f"node ('{device}'). The approving device must not be the "
+                "agent's host -- approve from a different device."
+            )
         allowed = {a.strip().lower() for a in self.approvers if a.strip()}
         if login.lower() not in allowed and device.lower() not in allowed:
             raise TrustedPathError(
@@ -380,7 +450,7 @@ def resolve_trusted(
     """
     if local_addrs is None:
         local_addrs = local_addresses()
-    if source_ip in local_addrs:
+    if _source_is_local(source_ip, local_addrs):
         raise TrustedPathError(
             f"Refused: connection from a local address ({source_ip}). The "
             "approval surface only accepts decisions from a device that is "

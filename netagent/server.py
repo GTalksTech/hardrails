@@ -26,6 +26,7 @@ deployment would persist these, but the boundary logic would not change.
 
 from __future__ import annotations
 
+import functools
 import os
 import secrets
 import shutil
@@ -520,13 +521,33 @@ def _build_identity() -> object:
                 "nobody can approve, so the server refuses to start "
                 "(fail-deny)."
             )
-        if shutil.which("tailscale") is None:
+        tailscale_bin = shutil.which("tailscale")
+        if tailscale_bin is None:
             raise trusted_path_mod.TrustedPathError(
                 "NETAGENT_APPROVAL_IDENTITY=tailscale, but no `tailscale` "
                 "CLI is on PATH -- whois attestation is impossible, so the "
                 "server refuses to start (fail-deny)."
             )
-        return trusted_path_mod.TailscaleIdentity(approvers=approvers)
+        # Resolve the binary to an absolute path ONCE, here at startup in the
+        # operator's environment -- invoking a bare name at request time would
+        # let a same-user attacker win the executable search with a planted
+        # `tailscale` (issue #22). Bind whois to that path, and capture this
+        # node's own name so the resolver can refuse the agent's OWN host.
+        whois = functools.partial(
+            trusted_path_mod.tailscale_whois, binary=tailscale_bin
+        )
+        try:
+            self_name = trusted_path_mod.tailscale_self_name(tailscale_bin)
+        except Exception as err:  # noqa: BLE001 -- any failure is fail-deny
+            raise trusted_path_mod.TrustedPathError(
+                "NETAGENT_APPROVAL_IDENTITY=tailscale, but `tailscale status` "
+                f"did not answer ({type(err).__name__}), so the server cannot "
+                "identify its own node to exclude it from approving. Refusing "
+                "to start (fail-deny)."
+            ) from err
+        return trusted_path_mod.TailscaleIdentity(
+            approvers=approvers, whois=whois, self_name=self_name
+        )
     _enrollment_record = trusted_path_mod.load_enrollment(_secret_file_path())
     return trusted_path_mod.SecretIdentity(enrollment=_enrollment_record)
 
