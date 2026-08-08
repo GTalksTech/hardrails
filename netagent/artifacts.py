@@ -77,13 +77,16 @@ def update_artifact(
     """
     # The id becomes a filename, so it is validated at the sink even though
     # callers only pass server-issued ids ('appr-3'): a separator-bearing or
-    # otherwise malformed id must never reach Path arithmetic. Same
+    # otherwise malformed id must never reach Path arithmetic, and the
+    # resolved file must land inside the approvals directory. Same
     # best-effort contract as a failed write -- no artifact, return None.
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", approval_id):
         return None
+    directory = resolve_approvals_dir(audit_log_path).resolve()
+    path = (directory / f"{approval_id}.md").resolve()
+    if not path.is_relative_to(directory):
+        return None
     _events.setdefault(approval_id, []).append((_utcnow().isoformat(), event))
-    directory = resolve_approvals_dir(audit_log_path)
-    path = directory / f"{approval_id}.md"
     try:
         directory.mkdir(parents=True, exist_ok=True)
         path.write_text(_render(approval_id, request), encoding="utf-8")
