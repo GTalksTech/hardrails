@@ -44,6 +44,7 @@ from netagent.models import (
     ApprovalState,
     Finding,
     RemediationProposal,
+    _utcnow,
 )
 
 
@@ -220,6 +221,12 @@ def apply_approved(
     should already have blocked an unapproved call upstream; these asserts are
     the last line of defense so this function is safe even if called directly.
     """
+    if approval.state is ApprovalState.APPLIED:
+        raise RemediationError(
+            "Refusing to apply: this approval was already applied. Approvals "
+            "are single-use -- build a new proposal and get a fresh approval "
+            "for another change."
+        )
     if approval.state is not ApprovalState.APPROVED:
         raise RemediationError(
             f"Refusing to apply: approval is '{approval.state.value}', not "
@@ -250,4 +257,9 @@ def apply_approved(
         output = conn.send_config_set(proposal.config_commands)
     finally:
         conn.disconnect()
+    # Consume the approval: single-use (issue #18). The change succeeded, so this
+    # yes is spent -- mark it APPLIED so the boundary refuses any replay. A push
+    # that raised never reaches here, so a failed apply stays retryable.
+    approval.state = ApprovalState.APPLIED
+    approval.applied_at = _utcnow()
     return output
