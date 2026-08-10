@@ -50,6 +50,11 @@ already requires.
   node's `Self.TailscaleIPs` and refuses any peer arriving from one of them
   (name-independent), and fails deny if it can identify its own node by neither
   name nor address. (#32)
+- **Single-use apply is atomic under concurrency.** Two concurrent
+  `apply_remediation` calls for the same approval could both pass the `APPROVED`
+  check before either consumed it, and both push. The apply path now serializes
+  its check → push → `APPLIED` transition under a lock, so exactly one push lands;
+  the loser returns a clean single-use block. A failed push stays retryable. (#37)
 
 ### Added
 - `hardrails-conformance`: a runnable self-test that executes the spec's 8-item

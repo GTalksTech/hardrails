@@ -30,6 +30,7 @@ device -- applying it requires a separate, human-gated call.
 from __future__ import annotations
 
 import difflib
+import threading
 
 from netmiko import ConnectHandler
 
@@ -50,6 +51,14 @@ from netagent.models import (
 
 class RemediationError(RuntimeError):
     """Raised when a proposal can't be built or an apply is illegal."""
+
+
+# Serializes the sole write path so single-use is ATOMIC (issue #37). Without it,
+# two concurrent applies of one approval both pass the APPROVED check before
+# either sets APPLIED, and both push. Applies are rare and human-gated, so
+# serializing this one path is free at lab scale; the lock is held ONLY around the
+# apply critical section, never around read-path or audit work.
+_APPLY_LOCK = threading.Lock()
 
 
 # ----------------------------------------------------------------------------
@@ -221,45 +230,51 @@ def apply_approved(
     should already have blocked an unapproved call upstream; these asserts are
     the last line of defense so this function is safe even if called directly.
     """
-    if approval.state is ApprovalState.APPLIED:
-        raise RemediationError(
-            "Refusing to apply: this approval was already applied. Approvals "
-            "are single-use -- build a new proposal and get a fresh approval "
-            "for another change."
-        )
-    if approval.state is not ApprovalState.APPROVED:
-        raise RemediationError(
-            f"Refusing to apply: approval is '{approval.state.value}', not "
-            "'approved'. A human must approve first."
-        )
-    if approval.proposal is not proposal and approval.proposal != proposal:
-        raise RemediationError(
-            "Refusing to apply: this approval was not issued for this proposal."
-        )
-    if approval.proposal.device != proposal.device:
-        raise RemediationError(
-            "Refusing to apply: approval/proposal device mismatch. "
-            "One device per approval -- no substitution."
-        )
+    # The state check, the device push, and the APPLIED transition run under one
+    # lock so single-use is atomic (issue #37): two concurrent applies of the same
+    # approval cannot both pass the check and both push. The second caller acquires
+    # the lock only after the first has set APPLIED, and refuses.
+    with _APPLY_LOCK:
+        if approval.state is ApprovalState.APPLIED:
+            raise RemediationError(
+                "Refusing to apply: this approval was already applied. Approvals "
+                "are single-use -- build a new proposal and get a fresh approval "
+                "for another change."
+            )
+        if approval.state is not ApprovalState.APPROVED:
+            raise RemediationError(
+                f"Refusing to apply: approval is '{approval.state.value}', not "
+                "'approved'. A human must approve first."
+            )
+        if approval.proposal is not proposal and approval.proposal != proposal:
+            raise RemediationError(
+                "Refusing to apply: this approval was not issued for this proposal."
+            )
+        if approval.proposal.device != proposal.device:
+            raise RemediationError(
+                "Refusing to apply: approval/proposal device mismatch. "
+                "One device per approval -- no substitution."
+            )
 
-    device = get_device(proposal.device)
-    params = {
-        "device_type": device["device_type"],
-        "host": device["host"],
-        "username": device["username"],
-        "password": password or _resolve_password(),
-        "conn_timeout": _CONNECT_TIMEOUT,
-        "read_timeout_override": _READ_TIMEOUT,
-    }
+        device = get_device(proposal.device)
+        params = {
+            "device_type": device["device_type"],
+            "host": device["host"],
+            "username": device["username"],
+            "password": password or _resolve_password(),
+            "conn_timeout": _CONNECT_TIMEOUT,
+            "read_timeout_override": _READ_TIMEOUT,
+        }
 
-    conn = ConnectHandler(**params)
-    try:
-        output = conn.send_config_set(proposal.config_commands)
-    finally:
-        conn.disconnect()
-    # Consume the approval: single-use (issue #18). The change succeeded, so this
-    # yes is spent -- mark it APPLIED so the boundary refuses any replay. A push
-    # that raised never reaches here, so a failed apply stays retryable.
-    approval.state = ApprovalState.APPLIED
-    approval.applied_at = _utcnow()
-    return output
+        conn = ConnectHandler(**params)
+        try:
+            output = conn.send_config_set(proposal.config_commands)
+        finally:
+            conn.disconnect()
+        # Consume the approval: single-use (issue #18). The change succeeded, so
+        # this yes is spent -- mark it APPLIED so the boundary refuses any replay.
+        # APPLIED is set only after send_config_set returns and inside the lock, so
+        # a push that raised leaves the approval APPROVED and still retryable.
+        approval.state = ApprovalState.APPLIED
+        approval.applied_at = _utcnow()
+        return output
