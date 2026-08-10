@@ -21,7 +21,14 @@ already requires.
   redirect, or abbreviated verb could smuggle a config command through
   `run_show` (a read tool) to the device with no approval. The command guard now
   positively allows only `show`/`ping`/`traceroute`, rejects multi-command
-  strings and write-target pipes, and is covered by tests. (#16, #17)
+  strings, and refuses output-redirect pipes, and is covered by tests. (#16, #17)
+- **Read-path pipe filters are an allowlist too.** #17's pipe check was still a
+  full-word blocklist of `redirect`/`tee`/`append`, so IOS abbreviations
+  (`| red`, `| te`, `| a`) and a redirect chained behind a legal filter slipped
+  through — reopening the unapproved-write / running-config-exfiltration vector on
+  the read path. The pipe check is now a positive allowlist: after a `|` only
+  `include`/`exclude`/`begin`/`section`/`count` (full word) are permitted, every
+  segment checked. (#35)
 - **Approvals are single-use at apply.** A resolved approval is consumed
   (`APPLIED`) after a successful push; it can no longer be replayed to re-apply
   the same change. (#18, #19)

