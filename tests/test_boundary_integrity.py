@@ -118,6 +118,27 @@ class TestFailClosedAuditForMutations:
         # Reads are best-effort: a read that isn't logged changed nothing.
         assert boundary.guard("run_show", {"device": "core-rtr-01"}, lambda: "ok") == "ok"
 
+    def test_refused_mutation_leaves_no_stale_allowed_record(self, tmp_path, monkeypatch):
+        # The fail-closed refusal must not leave a contradictory ALLOWED record in
+        # the in-memory log (issue #36): a reader of get_audit_log() must not see
+        # an 'allowed' entry for a mutation that never ran.
+        boundary = Boundary(audit_log_path=tmp_path / "audit.jsonl")
+        boundary.register("apply_remediation", ToolKind.MUTATE)
+        monkeypatch.setattr(boundary, "_persist", lambda record: False)
+
+        with pytest.raises(BoundaryViolation):
+            boundary.guard(
+                "apply_remediation", {"device": "core-rtr-01"},
+                lambda: "APPLIED", approval=_trusted_approval(),
+            )
+
+        records = boundary.audit_log()
+        decisions = [r.decision for r in records]
+        # Exactly one record for the call, and it is BLOCKED -- not ALLOWED, and
+        # not an ALLOWED+BLOCKED pair.
+        assert decisions == [ToolDecision.BLOCKED], [d.value for d in decisions]
+        assert "audit" in records[0].reason.lower()
+
 
 class TestExceptionSummaryDoesNotLeak:
     def test_secret_in_exception_message_is_withheld(self, tmp_path):

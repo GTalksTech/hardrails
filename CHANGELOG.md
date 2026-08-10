@@ -55,6 +55,11 @@ already requires.
   check before either consumed it, and both push. The apply path now serializes
   its check → push → `APPLIED` transition under a lock, so exactly one push lands;
   the loser returns a clean single-use block. A failed push stays retryable. (#37)
+- **Fail-closed mutations no longer leave a stale `allowed` audit record.** When a
+  mutation was refused because its durable receipt could not be written, the
+  in-memory log kept the ALLOWED record and appended a BLOCKED one, so
+  `get_audit_log()` showed an `allowed` entry for a call that never ran. The
+  record is now flipped to BLOCKED in place — one honest verdict. (#36)
 
 ### Added
 - `hardrails-conformance`: a runnable self-test that executes the spec's 8-item
