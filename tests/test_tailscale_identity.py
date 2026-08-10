@@ -201,11 +201,36 @@ class TestServerIdentityWiring:
         monkeypatch.setattr(
             server.trusted_path_mod, "tailscale_self_name", lambda binary: "agent-host"
         )
+        monkeypatch.setattr(
+            server.trusted_path_mod, "tailscale_self_addresses",
+            lambda binary: frozenset({"100.97.1.36"}),
+        )
         identity = server._build_identity()
         assert isinstance(identity, trusted_path.TailscaleIdentity)
         assert identity.approvers == frozenset({"gmasters428@github", "pi5"})
-        # The agent's own node name is captured so it can be excluded (issue #22).
+        # The agent's own node name AND addresses are captured so it can be
+        # excluded by either signal (issues #22, #32).
         assert identity.self_name == "agent-host"
+        assert identity.self_addresses == frozenset({"100.97.1.36"})
+
+    def test_unidentifiable_self_node_fails_deny(self, monkeypatch):
+        # If `tailscale status` yields neither a name nor an address for this
+        # machine, the server cannot exclude its own node -> refuse to start.
+        import netagent.server as server
+
+        monkeypatch.setenv("NETAGENT_APPROVAL_IDENTITY", "tailscale")
+        monkeypatch.setenv("NETAGENT_TAILNET_APPROVERS", "gmasters428@github")
+        monkeypatch.setattr(server.shutil, "which", lambda _: "/usr/bin/tailscale")
+        monkeypatch.setattr(
+            server.trusted_path_mod, "tailscale_self_name", lambda binary: ""
+        )
+        monkeypatch.setattr(
+            server.trusted_path_mod, "tailscale_self_addresses",
+            lambda binary: frozenset(),
+        )
+        with pytest.raises(trusted_path.TrustedPathError) as err:
+            server._build_identity()
+        assert "own node" in str(err.value).lower() or "identify" in str(err.value).lower()
 
 
 class TestWhoisParsing:
@@ -272,6 +297,90 @@ class TestSelfNodeRefusal:
         )
         assert resolved.state is ApprovalState.APPROVED
         assert resolved.approver == "gmasters428@github"
+
+
+class TestSelfNodeRefusalByAddress:
+    """The self-exclusion must not depend on a non-empty device name (issue #32):
+    when whois/ComputedName is empty, the agent's host is still refused by its own
+    tailnet ADDRESS."""
+
+    @staticmethod
+    def _whois_empty_name(ip: str) -> dict:
+        # Some tagged nodes return an empty ComputedName -> the by-NAME self-check
+        # is skipped; only the login (shared across the account) is left.
+        return {
+            "Node": {"ComputedName": ""},
+            "UserProfile": {"LoginName": "gmasters428@github"},
+        }
+
+    def test_self_address_refused_even_with_empty_name_and_allowlisted_login(self):
+        identity = trusted_path.TailscaleIdentity(
+            approvers=frozenset({"gmasters428@github"}),  # login IS allowlisted
+            whois=self._whois_empty_name,
+            self_name="",                                 # Self.ComputedName empty too
+            self_addresses=frozenset({"100.97.1.36"}),    # but self addresses are known
+        )
+        request = _pending()
+        with pytest.raises(trusted_path.TrustedPathError) as err:
+            trusted_path.resolve_trusted(
+                request, decision="approve", approver="x", reason="r",
+                submitted_secret="", identity=identity,
+                source_ip="100.97.1.36",                  # the agent host's own IP
+                # enumeration MISSED the tailnet address (the #23 gap):
+                local_addrs=frozenset({"127.0.0.1", "::1"}),
+            )
+        msg = str(err.value).lower()
+        assert "own tailnet address" in msg or "agent's host" in msg
+        assert request.state is ApprovalState.PENDING
+
+    def test_ipv4_mapped_form_of_a_self_address_is_refused(self):
+        identity = trusted_path.TailscaleIdentity(
+            approvers=frozenset({"gmasters428@github"}),
+            whois=self._whois_empty_name,
+            self_addresses=frozenset({"100.97.1.36"}),
+        )
+        with pytest.raises(trusted_path.TrustedPathError):
+            trusted_path.resolve_trusted(
+                _pending(), decision="approve", approver="x", reason="r",
+                submitted_secret="", identity=identity,
+                source_ip="::ffff:100.97.1.36",
+                local_addrs=frozenset({"127.0.0.1"}),
+            )
+
+    def test_different_node_with_empty_name_still_approves(self):
+        # An empty ComputedName is not disqualifying on its own -- only BEING this
+        # node is. A real, allowlisted, off-host peer still approves.
+        identity = trusted_path.TailscaleIdentity(
+            approvers=frozenset({"gmasters428@github"}),
+            whois=self._whois_empty_name,
+            self_addresses=frozenset({"100.97.1.36"}),  # NOT the peer's address
+        )
+        resolved = trusted_path.resolve_trusted(
+            _pending(), decision="approve", approver="x", reason="r",
+            submitted_secret="", identity=identity,
+            source_ip="100.94.194.78",                  # a different node
+            local_addrs=frozenset({"127.0.0.1"}),
+        )
+        assert resolved.state is ApprovalState.APPROVED
+        assert resolved.approver == "gmasters428@github"
+
+
+class TestSelfAddressParsing:
+    def test_self_addresses_parses_tailscale_ips(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            assert cmd[0] == "/opt/bin/tailscale" and "status" in cmd
+
+            class _R:
+                stdout = (
+                    '{"Self":{"ComputedName":"agent-host",'
+                    '"TailscaleIPs":["100.97.1.36","fd7a:115c:a1e0::1"]}}'
+                )
+
+            return _R()
+
+        monkeypatch.setattr(trusted_path.subprocess, "run", fake_run)
+        addrs = trusted_path.tailscale_self_addresses("/opt/bin/tailscale")
+        assert addrs == frozenset({"100.97.1.36", "fd7a:115c:a1e0::1"})
 
 
 class TestLocalSourceNormalization:

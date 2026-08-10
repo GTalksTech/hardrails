@@ -44,6 +44,12 @@ already requires.
   console script installs on a base `pip install hardrails`, but its checks drive
   the runnable agent; it now prints an "install `hardrails[lab]`" hint and exits
   non-zero instead of dying with a bare `ModuleNotFoundError`. (#33)
+- **Mode B self-node refusal no longer depends on a non-empty device name.** The
+  self-exclusion matched `ComputedName`, which some tagged nodes leave empty —
+  reopening a narrow self-approval path. The server now also captures the local
+  node's `Self.TailscaleIPs` and refuses any peer arriving from one of them
+  (name-independent), and fails deny if it can identify its own node by neither
+  name nor address. (#32)
 
 ### Added
 - `hardrails-conformance`: a runnable self-test that executes the spec's 8-item
