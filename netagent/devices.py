@@ -71,9 +71,15 @@ _READ_TIMEOUT = 30
 # allowlist unambiguous.
 _READ_VERBS = frozenset({"show", "ping", "traceroute"})
 
-# A read may be piped to a FILTER (include/exclude/begin/section/count), but
-# never to one of these -- they write to the device filesystem.
-_PIPE_WRITE_TARGETS = frozenset({"redirect", "tee", "append"})
+# A read may be piped to a FILTER, and the filter is itself a POSITIVE allowlist:
+# after a `|`, only these display-only modifiers are permitted, full word. This
+# is the same allowlist discipline as the leading verb, and for the same reason
+# -- a write-target *blocklist* (redirect/tee/append) missed IOS abbreviations
+# (`red`/`te`/`a`) and modifiers hidden behind a legal filter in a chained pipe,
+# turning the read path into an unapproved (and remotely-exfiltrating) write path
+# (issue #35). Anything after `|` that is not on this list fails closed --
+# including `redirect`/`tee`/`append`, their abbreviations, and unknown modifiers.
+_READ_PIPE_FILTERS = frozenset({"include", "exclude", "begin", "section", "count"})
 
 
 class WriteAttemptOnReadPath(RuntimeError):
@@ -116,15 +122,31 @@ def _read_command_rejection(command: str) -> str | None:
             "A change must go through a RemediationProposal and an approved "
             "ApprovalRequest."
         )
-    # Filter pipes are fine; write-target pipes are not.
+    # Pipe filters are a positive allowlist, checked on EVERY segment (not just
+    # the first) so a redirect cannot hide behind a legal filter in a chained
+    # pipe. The first token of each `| ...` segment must be a known read filter,
+    # full word -- redirect/tee/append and their abbreviations are not on the
+    # list and fail closed. See docs/specs/2026-08-10-read-path-pipe-filter-allowlist.md.
     if "|" in command:
-        after_pipe = [tok.lower() for tok in command.split("|", 1)[1].split()]
-        hit = next((t for t in after_pipe if t in _PIPE_WRITE_TARGETS), None)
-        if hit is not None:
-            return (
-                f"output redirect '| {hit}' writes to the device and is refused "
-                "on the read path (filters like '| include' are fine)."
-            )
+        for segment in command.split("|")[1:]:
+            tokens = segment.split()
+            if not tokens:
+                return (
+                    "empty pipe segment ('|' with nothing after it). Pipe a read "
+                    "to exactly one filter: "
+                    f"| {', '.join(sorted(_READ_PIPE_FILTERS))}."
+                )
+            modifier = tokens[0].lower()
+            if modifier not in _READ_PIPE_FILTERS:
+                return (
+                    f"'| {tokens[0]}' is not a permitted read filter. After a "
+                    f"pipe the read path allows only "
+                    f"{', '.join(sorted(_READ_PIPE_FILTERS))} (full word, no "
+                    "abbreviations); output redirects (redirect/tee/append) write "
+                    "to the device -- including to remote destinations -- and are "
+                    "refused. A change must go through a RemediationProposal and "
+                    "an approved ApprovalRequest."
+                )
     return None
 
 
