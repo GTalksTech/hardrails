@@ -40,7 +40,11 @@ itself.
 | `scripts/generate_psirt_cache.py` | Freezes a live PSIRT API response into the cache file. |
 | `netagent/remediation.py` | Builds dry-run proposals; one gated path that actually applies a change. |
 | `netagent/approval.py` | Human-in-the-loop approve/reject bookkeeping. |
+| `netagent/trusted_path.py` | The approval surface the agent can't write: local-source rejection, enrolled-secret / tailnet identity, TLS. |
+| `netagent/artifacts.py` | On-disk approval artifacts (`approvals/<id>.md`): the reviewed commands, the diff, and the transition history. |
+| `netagent/enroll.py` | The `netagent-enroll` CLI: prints the approval secret once, stores only its hash. |
 | `netagent/server.py` | FastMCP (stdio) server. Every tool routes through the boundary. |
+| `netagent/conformance.py` | The `hardrails-conformance` self-test: runs the spec's 8-item checklist against the real boundary. |
 | `netagent/inventory.yaml` | The 3 lab devices. **No passwords.** |
 
 ## Boundary principles (enforced in code, not just documented)
