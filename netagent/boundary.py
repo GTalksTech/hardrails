@@ -357,15 +357,24 @@ class Boundary:
             and spec.kind is ToolKind.MUTATE
             and not record._persisted
         ):
-            blocked = self._record(
-                tool_name, arguments, ToolDecision.BLOCKED,
-                "Audit unavailable: the durable audit record for this change "
-                "could not be written, so the change is refused (fail-closed). "
-                "A mutation with no receipt is exactly what the audit log exists "
-                "to prevent. Fix the audit-log path/permissions "
-                "(NETAGENT_AUDIT_LOG) and retry.",
-            )
-            raise BoundaryViolation(blocked)
+            # Flip the record we already hold to BLOCKED in place, rather than
+            # appending a SECOND, contradictory record (issue #36): appending left
+            # a stale ALLOWED line in the in-memory log for a call that never ran,
+            # so get_audit_log() reported a refused mutation as 'allowed'. The
+            # durable JSONL never got the ALLOWED line (its persist just failed),
+            # so the in-memory record is the only copy to correct, and one BLOCKED
+            # verdict is the honest one. Set the reason before the decision so a
+            # concurrent reader that sees BLOCKED also sees the matching reason.
+            with self._lock:
+                record.reason = (
+                    "Audit unavailable: the durable audit record for this change "
+                    "could not be written, so the change is refused (fail-closed). "
+                    "A mutation with no receipt is exactly what the audit log "
+                    "exists to prevent. Fix the audit-log path/permissions "
+                    "(NETAGENT_AUDIT_LOG) and retry."
+                )
+                record.decision = ToolDecision.BLOCKED
+            raise BoundaryViolation(record)
 
         try:
             result = execute()
