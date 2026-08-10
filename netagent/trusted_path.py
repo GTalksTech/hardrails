@@ -361,6 +361,9 @@ def tailscale_self_name(binary: str = "tailscale") -> str:
     THIS node -- the agent's host must never be an approver, even when its login
     is on the allowlist (every device on an account shares one login). Same
     absolute-binary discipline as tailscale_whois (issue #22).
+
+    Note the name can be empty for some tagged nodes; the by-ADDRESS self-check
+    (tailscale_self_addresses) is the name-independent backstop (issue #32).
     """
     proc = subprocess.run(
         [binary, "status", "--json"],
@@ -369,6 +372,27 @@ def tailscale_self_name(binary: str = "tailscale") -> str:
     payload = json.loads(proc.stdout)
     name = (payload.get("Self") or {}).get("ComputedName") or ""
     return name.split(".")[0]
+
+
+def tailscale_self_addresses(binary: str = "tailscale") -> frozenset[str]:
+    """This machine's own tailnet addresses (`Self.TailscaleIPs`).
+
+    Captured once at startup so the resolver can refuse a peer arriving from THIS
+    node's own address. Name-INDEPENDENT: it holds even when `Self.ComputedName`
+    is empty (some tagged nodes), which the self-NAME check alone would miss -- if
+    the agent's host ever presents an empty ComputedName, the name match is
+    skipped and an allowlisted login alone would otherwise self-approve
+    (issue #32). Authoritative, unlike the best-effort local_addresses()
+    enumeration #23 warns "frequently misses the machine's own CGNAT address."
+    Same absolute-binary discipline as tailscale_whois.
+    """
+    proc = subprocess.run(
+        [binary, "status", "--json"],
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+    payload = json.loads(proc.stdout)
+    ips = (payload.get("Self") or {}).get("TailscaleIPs") or []
+    return frozenset(str(ip) for ip in ips if ip)
 
 
 @dataclass(frozen=True)
@@ -389,8 +413,15 @@ class TailscaleIdentity:
     # approver -- every device on an account shares one tailnet login, so a login
     # allowlist would otherwise vouch for the agent's own machine -- so a peer
     # that resolves to this name is refused regardless of the allowlist. Empty
-    # disables the check; the server always supplies it (issue #22).
+    # disables the by-name check; the server supplies it (issue #22).
     self_name: str = ""
+    # This machine's own tailnet addresses (`Self.TailscaleIPs`). A peer arriving
+    # from one of these IS the agent's host and is refused regardless of the
+    # allowlist -- name-INDEPENDENT, so the self-exclusion holds even when whois /
+    # ComputedName give an empty device name and the by-name check above is
+    # skipped (issue #32). Empty disables the by-address check; the server
+    # supplies it in mode B.
+    self_addresses: frozenset[str] = frozenset()
 
     def verify(
         self, source_ip: str, submitted_secret: str, claimed_approver: str
@@ -405,9 +436,26 @@ class TailscaleIdentity:
             ) from exc
         login, device = tailnet_names(payload)
         # Self-node refusal: the approving peer must be a DIFFERENT node than the
-        # one the agent runs on. This holds even when the enumeration-based
-        # local-source check missed the machine's own tailnet address, and even
-        # when the allowlist lists the operator's login (issue #22).
+        # one the agent runs on. Two independent signals, either sufficient, so
+        # the exclusion never depends on a single field being populated (issue
+        # #22, #32):
+        #   by ADDRESS -- the peer arrives from one of this node's own tailnet
+        #     addresses. Name-independent; survives an empty ComputedName, and
+        #     holds even when the enumeration-based local-source check missed it.
+        #   by NAME -- whois resolves the peer to this node's short name.
+        src = _normalize_addr(source_ip)
+        if src is not None and self.self_addresses:
+            self_norm = {
+                n for n in (_normalize_addr(a) for a in self.self_addresses)
+                if n is not None
+            }
+            if src in self_norm:
+                raise TrustedPathError(
+                    f"Refused: the connecting peer arrives from this machine's "
+                    f"own tailnet address ({source_ip}). The approving device "
+                    "must not be the agent's host -- approve from a different "
+                    "device."
+                )
         if self.self_name and device and device.lower() == self.self_name.lower():
             raise TrustedPathError(
                 f"Refused: the connecting peer is this machine's own tailnet "

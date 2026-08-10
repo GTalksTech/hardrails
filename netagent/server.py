@@ -538,6 +538,7 @@ def _build_identity() -> object:
         )
         try:
             self_name = trusted_path_mod.tailscale_self_name(tailscale_bin)
+            self_addresses = trusted_path_mod.tailscale_self_addresses(tailscale_bin)
         except Exception as err:  # noqa: BLE001 -- any failure is fail-deny
             raise trusted_path_mod.TrustedPathError(
                 "NETAGENT_APPROVAL_IDENTITY=tailscale, but `tailscale status` "
@@ -545,8 +546,20 @@ def _build_identity() -> object:
                 "identify its own node to exclude it from approving. Refusing "
                 "to start (fail-deny)."
             ) from err
+        # Exclude the agent's own node by NAME and by ADDRESS. Requiring at least
+        # one usable signal is fail-deny: an empty ComputedName alone would silently
+        # disable the by-name check (issue #32), but as long as the node has a
+        # tailnet address the by-address check still holds. Neither -> refuse.
+        if not self_name and not self_addresses:
+            raise trusted_path_mod.TrustedPathError(
+                "NETAGENT_APPROVAL_IDENTITY=tailscale, but `tailscale status` "
+                "reported neither a node name nor a tailnet address for this "
+                "machine, so the server cannot exclude its own node from "
+                "approving. Refusing to start (fail-deny)."
+            )
         return trusted_path_mod.TailscaleIdentity(
-            approvers=approvers, whois=whois, self_name=self_name
+            approvers=approvers, whois=whois,
+            self_name=self_name, self_addresses=self_addresses,
         )
     _enrollment_record = trusted_path_mod.load_enrollment(_secret_file_path())
     return trusted_path_mod.SecretIdentity(enrollment=_enrollment_record)

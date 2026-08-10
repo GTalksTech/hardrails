@@ -3,6 +3,11 @@
 **Status:** implemented in the same PR (fix for issue #22)
 **Date:** 2026-08-08
 
+> **Follow-up (2026-08-10, issue #32):** the self-node refusal below fires on a
+> device-NAME match, which is skipped when `ComputedName` is empty. A
+> name-independent, by-ADDRESS self-check now backstops it — see
+> [`2026-08-10-mode-b-self-node-by-address.md`](2026-08-10-mode-b-self-node-by-address.md).
+
 ## Problem
 
 Identity mode B (`NETAGENT_APPROVAL_IDENTITY=tailscale`) is weaker than the
