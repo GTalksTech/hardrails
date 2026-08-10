@@ -468,6 +468,13 @@ def apply_remediation(approval_id: str, device: str) -> Any:
         return boundary.guard("apply_remediation", args, _run, approval=request)
     except BoundaryViolation as exc:
         return _blocked(exc)
+    except remediation_mod.RemediationError as exc:
+        # The apply path re-asserts approval + single-device under a lock. If a
+        # concurrent apply consumed this approval first (issue #37), or any other
+        # last-line assertion tripped, surface it as a clean block -- not an
+        # unhandled tool error. The gate already logged the ALLOW; guard() logged
+        # the error outcome.
+        return {"blocked": True, "reason": str(exc), "tool": "apply_remediation"}
 
 
 # ============================================================================

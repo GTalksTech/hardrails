@@ -104,6 +104,52 @@ class TestApplyApprovedConsumesTheApproval:
             remediation_mod.apply_approved(approval.proposal, approval)
 
 
+class TestConcurrentApplyIsSingleUse:
+    def test_two_racing_applies_push_exactly_once(self, monkeypatch):
+        # Two threads apply the SAME approval at once. Without an atomic apply,
+        # both pass the state check while it is still APPROVED and both push
+        # (issue #37). Exactly one push must land; the loser refuses.
+        import threading
+        import time
+
+        pushes: list[list[str]] = []
+
+        class _SlowConn:
+            def __init__(self, **params: object) -> None:
+                pass
+
+            def send_config_set(self, commands: list[str]) -> str:
+                time.sleep(0.05)  # push latency widens the (pre-fix) race window
+                pushes.append(list(commands))
+                return "device output"
+
+            def disconnect(self) -> None:
+                pass
+
+        monkeypatch.setattr(remediation_mod, "ConnectHandler", _SlowConn)
+        monkeypatch.setenv("NETAGENT_PASSWORD", "lab-pw")
+        approval = _approval()
+
+        outcomes: list[str] = []
+
+        def worker() -> None:
+            try:
+                remediation_mod.apply_approved(approval.proposal, approval)
+                outcomes.append("applied")
+            except remediation_mod.RemediationError:
+                outcomes.append("refused")
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(pushes) == 1, f"expected exactly one push, got {len(pushes)}"
+        assert approval.state is ApprovalState.APPLIED
+        assert sorted(outcomes) == ["applied", "refused"]
+
+
 class _FakeReadConn:
     def __init__(self, device: object) -> None:
         self._device = device
