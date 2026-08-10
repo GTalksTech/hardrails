@@ -60,3 +60,27 @@ def test_c3_has_teeth_when_the_gate_stops_requiring_trusted(monkeypatch):
     # C4 asserts a relayed approval is blocked and the default requires trusted;
     # with the gate lax, that expectation fails.
     assert results["C4"].passed is False
+
+
+def test_cli_explains_cleanly_when_lab_extra_missing(monkeypatch, capsys):
+    # The `hardrails-conformance` console script installs on a plain
+    # `pip install hardrails` (base, no [lab]), but the checks need the runnable
+    # agent. Simulate a base install (netmiko absent) and assert the CLI prints a
+    # helpful "install hardrails[lab]" message and exits non-zero -- never a bare
+    # ModuleNotFoundError traceback (issue #33).
+    import importlib.util as ilu
+
+    real_find_spec = ilu.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "netmiko":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(ilu, "find_spec", fake_find_spec)
+    code = conformance.main([])
+    out = capsys.readouterr().out
+    assert code != 0
+    assert "lab" in out.lower()
+    assert "netmiko" in out.lower()
+    assert "Traceback" not in out

@@ -33,6 +33,10 @@ already requires.
   self-approve (self-node refusal at the attestation layer); the `tailscale`
   binary is resolved to an absolute path at startup; the local-source check
   normalizes IPs. Mode A unaffected. (#22, #23)
+- **`hardrails-conformance` degrades cleanly without the `[lab]` extra.** The
+  console script installs on a base `pip install hardrails`, but its checks drive
+  the runnable agent; it now prints an "install `hardrails[lab]`" hint and exits
+  non-zero instead of dying with a bare `ModuleNotFoundError`. (#33)
 
 ### Added
 - `hardrails-conformance`: a runnable self-test that executes the spec's 8-item

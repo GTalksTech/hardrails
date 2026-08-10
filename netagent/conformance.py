@@ -24,6 +24,7 @@ same way the server does and asserts the behavior the checklist item names.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import tempfile
 from dataclasses import dataclass
@@ -31,7 +32,6 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from netagent import devices
 from netagent.boundary import Boundary, BoundaryViolation, ToolKind
 from netagent.models import (
     ApprovalChannel,
@@ -40,6 +40,25 @@ from netagent.models import (
     RemediationProposal,
     ToolDecision,
 )
+
+# The device layer pulls the [lab] extra (netmiko, pyyaml). This module must
+# still IMPORT on a plain `pip install hardrails` -- the console script is
+# registered there -- so main() can print a helpful message instead of dying
+# with a bare ModuleNotFoundError (issue #33). Kept as a module attribute (not a
+# local import) so C2 reads the live guard and the teeth-test can monkeypatch it.
+try:
+    from netagent import devices
+except Exception:  # noqa: BLE001 -- any missing [lab] dep, reported by main()
+    devices = None  # type: ignore[assignment]
+
+# Import names of the [lab] extras the self-test needs. Checked once in main()
+# so a base install gets one clear "install hardrails[lab]" line, not a traceback.
+_LAB_MODULES = ("netmiko", "fastmcp", "yaml")
+
+
+def _missing_lab_deps() -> list[str]:
+    """The [lab] modules that will not import, in declaration order (may be empty)."""
+    return [m for m in _LAB_MODULES if importlib.util.find_spec(m) is None]
 
 
 @dataclass
@@ -114,6 +133,15 @@ def _check_c1() -> ConformanceResult:
 
 def _check_c2() -> ConformanceResult:
     title = "Read tools cannot be coerced into writes (enforced on the command)"
+    if devices is None:
+        # Base install: the device layer (and its read-path guard) is not
+        # importable. main() blocks this case up front; degrade rather than
+        # crash if run_conformance() is called directly.
+        return ConformanceResult(
+            "C2", title, False,
+            "device layer unavailable -- install the [lab] extra "
+            "(pip install \"hardrails[lab]\") to exercise the read-path guard",
+        )
     allowed = ["show version", "ping 10.0.0.1", "traceroute 10.0.0.1"]
     blocked = [
         "configure terminal", "conf t", "no ip http server", "write memory", "wr",
@@ -296,6 +324,22 @@ def run_conformance() -> list[ConformanceResult]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Preflight: the self-test exercises the runnable agent, so it needs the
+    # [lab] extra. On a plain `pip install hardrails` the console script still
+    # installs -- say so clearly and exit non-zero, instead of letting a
+    # transitive import fail with a bare traceback (issue #33).
+    missing = _missing_lab_deps()
+    if missing:
+        print("Hardrails conformance self-test (netagent)")
+        print("=" * 60)
+        print(
+            "Cannot run: this self-test drives the runnable agent, which needs "
+            "the optional [lab] dependencies."
+        )
+        print(f"Missing module(s): {', '.join(missing)}.")
+        print('Install them with:  pip install "hardrails[lab]"')
+        return 2
+
     results = run_conformance()
     print("Hardrails conformance self-test (netagent)")
     print("=" * 60)
